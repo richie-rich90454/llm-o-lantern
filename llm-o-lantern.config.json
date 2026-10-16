@@ -4,7 +4,7 @@
     "port": 8787
   },
   "plugins": {
-    "dialogue": "dialogue.ollama",
+    "dialogue": "dialogue.remote",
     "personality": "personality.haunted-pumpkin",
     "speechRecognition": "speech-recognition.local",
     "speechSynthesis": "speech-synthesis.neural",
@@ -26,15 +26,15 @@
       "structuredOutput": true
     },
     "remote": {
-      "preset": "openai",
+      "preset": "openrouter",
       "baseUrl": null,
-      "model": null,
+      "model": "nvidia/nemotron-3.5-super-vl",
       "apiKeyEnv": null,
       "temperature": 0.8,
       "maxTokens": 220,
-      "timeoutMs": 20000,
+      "timeoutMs": 30000,
       "useJsonResponseFormat": true,
-      "acknowledgeRemoteProcessing": false
+      "acknowledgeRemoteProcessing": true
     },
     "scripted": {
       "fallbackEnabled": true

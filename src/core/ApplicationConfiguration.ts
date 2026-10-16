@@ -357,7 +357,7 @@ function readConfig(root: RawRecord, problems: string[]): AppConfig {
         apiKeyEnv: readStringOrNull(remote, "apiKeyEnv", "dialogue.remote.apiKeyEnv", problems, null),
         temperature: readNumber(remote, "temperature", "dialogue.remote.temperature", problems, 0.8, 0, 2),
         maxTokens: readNumber(remote, "maxTokens", "dialogue.remote.maxTokens", problems, 220, 16, 4096),
-        timeoutMs: readNumber(remote, "timeoutMs", "dialogue.remote.timeoutMs", problems, 20000, 1000, 120000),
+        timeoutMs: readNumber(remote, "timeoutMs", "dialogue.remote.timeoutMs", problems, 30000, 1000, 120000),
         useJsonResponseFormat: readBoolean(remote, "useJsonResponseFormat", "dialogue.remote.useJsonResponseFormat", problems, true),
         acknowledgeRemoteProcessing: readBoolean(
           remote,

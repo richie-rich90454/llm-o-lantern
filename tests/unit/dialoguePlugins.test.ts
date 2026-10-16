@@ -217,9 +217,35 @@ describe("RemoteDialoguePlugin", () => {
     expect(response.providerId).toBe("dialogue.remote");
   });
 
-  it("rejects initialization when the API key is missing", async () => {
+  it("degrades without failing when the API key is missing, and generateResponse explains the fix", async () => {
     const plugin = new RemoteDialoguePlugin(makeRemoteConfig({ preset: "openai" }), logger, {});
-    await expect(plugin.initialize()).rejects.toThrow(/OPENAI_API_KEY/);
+    await plugin.initialize();
+
+    expect(await plugin.isAvailable()).toBe(false);
+    expect(plugin.getDisplayName()).toContain("(no API key)");
+    await expect(plugin.generateResponse(makeDialogueRequest(), new AbortController().signal)).rejects.toThrow(
+      /OPENAI_API_KEY/
+    );
+  });
+
+  it("targets the OpenRouter free Nemotron model by default", async () => {
+    const stub = queueFetch([
+      () => new Response(JSON.stringify({ choices: [{ message: { content: "{\"text\":\"ok\"}" } }] }), { status: 200 })
+    ]);
+    const plugin = new RemoteDialoguePlugin(
+      makeRemoteConfig({ preset: "openrouter", model: null }),
+      logger,
+      { OPENROUTER_API_KEY: "k" }
+    );
+    await plugin.initialize();
+    await plugin.generateResponse(makeDialogueRequest(), new AbortController().signal);
+
+    expect(stub.calls[0].url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    const body = JSON.parse(String(stub.calls[0].init?.body)) as { model: string };
+    expect(body.model).toBe("nvidia/nemotron-3.5-super-vl");
+    const headers = (stub.calls[0].init?.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer k");
+    expect(headers["X-Title"]).toBe("llm-o-lantern");
   });
 
   it("rejects initialization when remote processing is not acknowledged", async () => {

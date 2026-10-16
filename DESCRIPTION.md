@@ -6,9 +6,11 @@ llm-o-lantern is a modular, local-first, conversational 3D jack-o'-lantern. A
 visitor walks up to the booth, speaks, and the pumpkin answers out loud through
 a face that actually moves: mouth shapes driven by the speech itself, blinking
 eyes, a glow that shifts with mood, and a body that reacts to the conversation.
-Dialogue inference, speech recognition, and speech synthesis all run on the
-booth machine by default; nothing leaves it unless an operator explicitly
-enables a remote dialogue provider.
+The privacy posture is explicit, not silent: the shipped configuration selects
+OpenRouter cloud dialogue with the required acknowledgment flag, while speech
+recognition and speech synthesis stay on the booth machine. Selecting the local
+Ollama provider or the scripted provider returns the entire experience to fully
+offline operation.
 
 The project is built as a small plugin platform, not a monolith: every
 capability (dialogue source, personality, speech in, speech out, lip-sync,
@@ -43,10 +45,14 @@ validated, and initialized at startup.
 
 ## Features
 
-- Conversational dialogue with three selectable sources: Ollama (local LLM,
-  default), remote OpenAI/Anthropic-style providers (explicit opt-in via a
-  configuration acknowledgment), and a scripted offline fallback that answers
-  in character with no services running.
+- Conversational dialogue with three selectable provider plugins: the remote
+  plugin shipped as the default (OpenRouter with the free
+  `nvidia/nemotron-3.5-super-vl` model via the OpenAI-compatible Chat
+  Completions API, with the required `acknowledgeRemoteProcessing` consent set
+  in the shipped configuration; 13 other presets available), the local Ollama
+  plugin as a drop-in alternative, and a scripted offline fallback that
+  answers in character with no services running. A missing key or failed
+  provider degrades to the scripted fallback instead of stalling the booth.
 - A named personality ("Gourdrick", a haunted pumpkin) that constrains the
   model to short, in-character, family-friendly replies with a fixed emotion
   and delivery vocabulary, plus discoverable secret phrases.
@@ -77,14 +83,17 @@ validated, and initialized at startup.
 
 - Runs on a single booth machine; one visitor conversation at a time per page
   load. The browser must support WebGL and the Web Audio API.
-- The default experience is fully offline: it expects local Ollama, Kokoro,
-  and whisper servers, but the scripted fallback keeps the character talking
-  if the dialogue provider dies.
+- The shipped configuration uses OpenRouter cloud dialogue (explicitly
+  acknowledged) while speech recognition and speech synthesis expect local
+  Kokoro and whisper servers; selecting `dialogue.ollama` or
+  `dialogue.scripted` returns the whole experience to fully offline, and the
+  scripted fallback keeps the character talking if any provider dies.
 - Latency matters more than sophistication: replies are capped (280 characters
   by default) so synthesis and lip-sync stay short.
 - The booth is dark and loud; the design leans on subtitles, push-to-talk, a
   large state badge, and operator controls.
-- No accounts, no analytics, no persistence, no cloud dependency by default.
+- No accounts, no analytics, no persistence; local providers and scripted
+  mode run with no cloud dependency at all.
   Non-goals: multi-character scenes, persistent visitor history, mobile apps.
 
 ## What makes it a character, not a chatbot

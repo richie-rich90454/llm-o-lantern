@@ -38,7 +38,7 @@ export const REMOTE_PROVIDER_PRESETS: Record<string, RemoteProviderPreset> = {
     baseUrl: "https://openrouter.ai/api/v1",
     style: "openai",
     apiKeyEnv: "OPENROUTER_API_KEY",
-    defaultModel: "meta-llama/llama-3.3-70b-instruct"
+    defaultModel: "nvidia/nemotron-3.5-super-vl"
   },
   groq: {
     label: "Groq",
@@ -119,6 +119,7 @@ type ResolvedRemoteSettings = {
   model: string;
   apiKeyEnv: string | null;
   apiKey: string | null;
+  unconfigured: boolean;
   style: "openai" | "anthropic";
 };
 
@@ -201,14 +202,21 @@ export class RemoteDialoguePlugin {
     const model = this.config.model ?? preset.defaultModel;
     const apiKeyEnv = this.config.apiKeyEnv ?? preset.apiKeyEnv;
     let apiKey: string | null = null;
+    let unconfigured = false;
     if (apiKeyEnv !== null) {
       const value = this.environment[apiKeyEnv];
       if (typeof value !== "string" || value.trim() === "") {
-        throw new Error(
-          `Remote dialogue provider "${this.config.preset}" needs its API key in environment variable ${apiKeyEnv}`
+        // Missing key degrades instead of failing startup: the booth keeps
+        // running and the conversation route falls back to scripted dialogue
+        // until the key is provided.
+        unconfigured = true;
+        this.logger.warn(
+          `Remote dialogue provider "${preset.label}" has no API key in ${apiKeyEnv}; ` +
+            "the booth will answer with the scripted fallback until the key is set (copy .env.example to .env and add it)"
         );
+      } else {
+        apiKey = value;
       }
-      apiKey = value;
     }
     this.resolved = {
       presetKey: this.config.preset,
@@ -217,9 +225,14 @@ export class RemoteDialoguePlugin {
       model,
       apiKeyEnv,
       apiKey,
+      unconfigured,
       style: preset.style
     };
-    this.logger.info("Remote dialogue provider configured", { provider: preset.label, model, baseUrl });
+    if (unconfigured) {
+      this.logger.info("Remote dialogue provider configured in degraded mode", { provider: preset.label, model, baseUrl });
+    } else {
+      this.logger.info("Remote dialogue provider configured", { provider: preset.label, model, baseUrl, apiKeyPresent: apiKey !== null });
+    }
   }
 
   async shutdown(): Promise<void> {}
@@ -245,13 +258,20 @@ export class RemoteDialoguePlugin {
     if (resolved === null) {
       return "Remote (not initialized)";
     }
-    return `${resolved.preset.label} · ${resolved.model}`;
+    const suffix = resolved.unconfigured ? " (no API key)" : "";
+    return `${resolved.preset.label} · ${resolved.model}${suffix}`;
   }
 
   async generateResponse(request: DialogueRequest, signal: AbortSignal): Promise<DialogueResponse> {
     const resolved = this.resolved;
     if (resolved === null) {
       throw new Error("Remote dialogue plugin is not initialized");
+    }
+    if (resolved.apiKeyEnv !== null && resolved.apiKey === null) {
+      throw new Error(
+        `Remote dialogue provider "${resolved.preset.label}" is not configured: set ${resolved.apiKeyEnv} ` +
+          "(for example in .env) and restart the booth"
+      );
     }
     const combined = AbortSignal.any([signal, AbortSignal.timeout(this.config.timeoutMs)]);
     const content =

@@ -15,7 +15,9 @@ holds HTTP transport and `src/frontend` the browser composition root and UI.
 Principles: composition instead of inheritance (no TypeScript interfaces,
 abstract classes, or application-level `extends`; contracts are `type` shapes
 enforced at runtime by the plugin manager); configuration over code;
-local-first services; no persistence.
+local-first speech services; no persistence. The shipped configuration uses
+OpenRouter dialogue with explicit consent; switching `plugins.dialogue` to
+`dialogue.ollama` or `dialogue.scripted` makes the deployment fully offline.
 
 ## 2. Core responsibilities
 
@@ -85,8 +87,10 @@ plugins: `character.pumpkin`, `microphone.browser`, `audio.playback-webaudio`.
 
 - Dialogue: `OllamaDialoguePlugin` (native `/api/chat`, JSON mode,
   keep-alive, timeout); `RemoteDialoguePlugin` (14 presets, OpenAI or
-  Anthropic wire formats, requires `acknowledgeRemoteProcessing: true` and a
-  backend-environment key); `ScriptedDialoguePlugin` (rules plus rotating
+  Anthropic wire formats; the shipped default is the OpenRouter preset on
+  `nvidia/nemotron-3.5-super-vl`; requires `acknowledgeRemoteProcessing: true`
+  and a backend-environment key, and degrades to unavailable with a warning
+  when the key is missing); `ScriptedDialoguePlugin` (rules plus rotating
   lines, always available).
 - Personality: `HauntedPumpkinPersonalityPlugin` - six emotions (`neutral,
   amused, suspicious, dramatic, delighted, grumpy`), six deliveries (`normal,
@@ -290,9 +294,12 @@ environment variables. Path defaults to `llm-o-lantern.config.json`
 enums and hex colors, and accumulate problems into one startup error naming
 each path.
 
-- Cross-validation: remote dialogue requires `acknowledgeRemoteProcessing`;
-  the piper engine requires both paths; `plugins.additional` cannot duplicate
-  a primary selection.
+- Remote dialogue always requires the explicit `acknowledgeRemoteProcessing`
+  consent (the shipped `llm-o-lantern.config.json` sets it to `true` together
+  with the OpenRouter preset); a missing API key does not fail startup - the
+  provider reports unavailable, health shows degraded, and turns use the
+  scripted fallback. The piper engine requires both paths; `plugins.additional`
+  cannot duplicate a primary selection.
 - Environment overrides: `LLMOL_HOST`, `LLMOL_PORT`, `LLMOL_LOG_LEVEL`,
   `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_KEEP_ALIVE`,
   `LLMOL_STT_BASE_URL`, `LLMOL_TTS_BASE_URL`. API keys are read only from the
@@ -306,9 +313,12 @@ each path.
   transcription request; nothing is persisted to disk. Session memory is
   per-session and bounded (16 messages / 8000 characters), cleared on reset,
   purged after 30 minutes idle (checked every 60 s); no cross-visitor history.
-- Remote dialogue is off by default; enabling requires an explicit
-  acknowledgment plus a backend-environment key. Keys never reach the browser;
-  the logger redacts credential-shaped keys recursively.
+- The shipped configuration selects remote dialogue (OpenRouter, free
+  `nvidia/nemotron-3.5-super-vl`) with the explicit acknowledgment flag set;
+  selecting `dialogue.ollama` or `dialogue.scripted` in the config file
+  restores fully offline operation. Enabling or switching remote providers
+  requires the consent flag plus a backend-environment key. Keys never reach
+  the browser; the logger redacts credential-shaped keys recursively.
 - Dialogue falls back to scripted when enabled; TTS failure degrades to
   subtitles (`degraded: true`, no audio/track); stale turns are 409 on both
   ends; every failure path ends in RECOVERING then IDLE (or LISTENING), so the

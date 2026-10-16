@@ -181,7 +181,8 @@ Status: implemented.
 
 | Integration point | Needed for | Without it |
 |---|---|---|
-| Ollama (localhost:11434) | Local dialogue inference | Scripted fallback (if enabled) or a failed turn |
+| OpenRouter (https://openrouter.ai/api/v1) | Shipped dialogue provider | Scripted fallback (`dialogueFallback: true`); the booth keeps working |
+| Ollama (localhost:11434) | Local dialogue when `dialogue.ollama` is selected | Scripted fallback (if enabled) or a failed turn |
 | Kokoro-FastAPI (localhost:8880) or Piper | Audio + lip-sync | Subtitles only (`degraded: true`) |
 | whisper.cpp server (localhost:8082) | Speech input | Manual text submission via the HTTP API only |
 | Microphone + browser permission | Voice capture | Visual-only booth; push-to-talk also unusable |
