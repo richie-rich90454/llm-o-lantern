@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>llm-o-lantern</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="scene-host" aria-hidden="true"></div>
+
+      <header id="top-bar">
+        <span id="character-name">llm-o-lantern</span>
+        <span id="state-badge">IDLE</span>
+        <span id="provider-badge"></span>
+      </header>
+
+      <div id="subtitles" hidden>
+        <p id="subtitle-visitor"></p>
+        <p id="subtitle-character"></p>
+      </div>
+
+      <div id="error-banner" role="alert" hidden></div>
+
+      <footer id="controls">
+        <button id="mic-button" type="button" aria-pressed="false">Listen: off</button>
+        <button id="talk-button" type="button" aria-pressed="false">Hold to talk (T)</button>
+        <button id="reset-button" type="button">Reset visitor (R)</button>
+        <button id="diagnostics-button" type="button" aria-expanded="false">Diagnostics (D)</button>
+      </footer>
+
+      <aside id="diagnostics-panel" hidden>
+        <h2>Diagnostics</h2>
+        <dl id="diagnostics-list"></dl>
+        <h3>Recent errors</h3>
+        <ul id="error-log"></ul>
+        <button id="diagnostics-close" type="button">Close</button>
+      </aside>
+
+      <div id="start-overlay">
+        <h1>llm-o-lantern</h1>
+        <p>A haunted pumpkin waits in the dark.</p>
+        <button id="start-button" type="button">Wake the pumpkin</button>
+        <p class="hint">Click once to allow audio and the microphone.</p>
+      </div>
+    </div>
+    <script type="module" src="/src/frontend/main.ts"></script>
+  </body>
+</html>
