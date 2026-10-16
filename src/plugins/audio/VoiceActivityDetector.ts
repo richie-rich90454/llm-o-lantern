@@ -21,9 +21,29 @@ export class VoiceActivityDetector {
   private silenceMs = 0;
   private utteranceMs = 0;
   private lastRms = 0;
+  private adaptationEnabled = true;
+  private thresholdScale = 1;
 
   constructor(options: VoiceActivityOptions) {
     this.options = options;
+  }
+
+  /**
+   * While the character's own audio is playing, the coordinator freezes floor
+   * adaptation so the pumpkin's voice cannot raise the noise floor and mask a
+   * visitor trying to interrupt.
+   */
+  setAdaptationEnabled(enabled: boolean): void {
+    this.adaptationEnabled = enabled;
+  }
+
+  /**
+   * Scales the detection threshold without changing the learned noise floor.
+   * Used to require a louder barge-in while the character speaks, so residual
+   * speaker echo does not make the pumpkin interrupt itself.
+   */
+  setThresholdScale(scale: number): void {
+    this.thresholdScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
   }
 
   processFrame(samples: Float32Array): VoiceActivityFrameResult {
@@ -39,12 +59,15 @@ export class VoiceActivityDetector {
     this.lastRms = rms;
     const frameMs = (samples.length / this.options.sampleRate) * 1000;
 
-    if (rms < this.noiseFloor) {
-      this.noiseFloor = this.noiseFloor * (1 - NOISE_FLOOR_FALL_RATE) + rms * NOISE_FLOOR_FALL_RATE;
-    } else {
-      this.noiseFloor = this.noiseFloor * (1 - NOISE_FLOOR_RISE_RATE) + rms * NOISE_FLOOR_RISE_RATE;
+    if (this.adaptationEnabled) {
+      if (rms < this.noiseFloor) {
+        this.noiseFloor = this.noiseFloor * (1 - NOISE_FLOOR_FALL_RATE) + rms * NOISE_FLOOR_FALL_RATE;
+      } else {
+        this.noiseFloor = this.noiseFloor * (1 - NOISE_FLOOR_RISE_RATE) + rms * NOISE_FLOOR_RISE_RATE;
+      }
     }
-    const threshold = Math.max(this.options.startThreshold, this.noiseFloor * NOISE_FLOOR_HEADROOM);
+    const threshold =
+      Math.max(this.options.startThreshold, this.noiseFloor * NOISE_FLOOR_HEADROOM) * this.thresholdScale;
 
     if (!this.speaking) {
       if (rms < threshold) {

@@ -19,6 +19,9 @@ type SpeechInputCoordinatorDependencies = {
 
 const STT_SAMPLE_RATE = 16000;
 const MIN_UTTERANCE_SECONDS = 0.25;
+// While the character is audible, a visitor must clearly out-shout the
+// speaker for a barge-in; this keeps residual echo from self-interrupting.
+const BARGE_IN_THRESHOLD_SCALE = 1.6;
 
 // Browsers bind fetch to window: storing the native function and calling it
 // later as a method (this.fetchImpl(...)) throws "Illegal invocation". The
@@ -110,6 +113,12 @@ export class SpeechInputCoordinator {
     if (!this.autoListening || this.pushToTalkActive) {
       return;
     }
+    const state = this.dependencies.characterController.getState();
+    const characterAudible = state === "PREPARING_SPEECH" || state === "SPEAKING";
+    // Freeze the noise floor and raise the gate while the pumpkin talks:
+    // its own voice must not poison the floor or trigger self-interruption.
+    this.dependencies.voiceDetector.setAdaptationEnabled(!characterAudible);
+    this.dependencies.voiceDetector.setThresholdScale(characterAudible ? BARGE_IN_THRESHOLD_SCALE : 1);
     const event = this.dependencies.voiceDetector.processFrame(frame);
     if (event === "speech-start") {
       this.dependencies.conversation.interrupt();

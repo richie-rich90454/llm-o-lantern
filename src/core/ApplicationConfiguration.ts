@@ -356,7 +356,7 @@ function readConfig(root: RawRecord, problems: string[]): AppConfig {
         model: readStringOrNull(remote, "model", "dialogue.remote.model", problems, null),
         apiKeyEnv: readStringOrNull(remote, "apiKeyEnv", "dialogue.remote.apiKeyEnv", problems, null),
         temperature: readNumber(remote, "temperature", "dialogue.remote.temperature", problems, 0.8, 0, 2),
-        maxTokens: readNumber(remote, "maxTokens", "dialogue.remote.maxTokens", problems, 220, 16, 4096),
+        maxTokens: readNumber(remote, "maxTokens", "dialogue.remote.maxTokens", problems, 800, 16, 4096),
         timeoutMs: readNumber(remote, "timeoutMs", "dialogue.remote.timeoutMs", problems, 30000, 1000, 120000),
         useJsonResponseFormat: readBoolean(remote, "useJsonResponseFormat", "dialogue.remote.useJsonResponseFormat", problems, true),
         acknowledgeRemoteProcessing: readBoolean(
@@ -567,6 +567,8 @@ function applyEnvironmentOverrides(root: RawRecord, environment: Record<string, 
   set(["dialogue", "ollama", "baseUrl"], environment.OLLAMA_BASE_URL);
   set(["dialogue", "ollama", "model"], environment.OLLAMA_MODEL);
   set(["dialogue", "ollama", "keepAlive"], environment.OLLAMA_KEEP_ALIVE);
+  set(["dialogue", "remote", "preset"], environment.LLMOL_DIALOGUE_PRESET);
+  set(["dialogue", "remote", "model"], environment.LLMOL_DIALOGUE_MODEL);
   set(["speechRecognition", "whisperCpp", "baseUrl"], environment.LLMOL_STT_BASE_URL);
   set(["speechRecognition", "openaiCompatible", "baseUrl"], environment.LLMOL_STT_BASE_URL);
   set(["speechSynthesis", "kokoro", "baseUrl"], environment.LLMOL_TTS_BASE_URL);

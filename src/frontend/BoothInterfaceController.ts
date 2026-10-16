@@ -207,6 +207,9 @@ export class BoothInterfaceController {
     try {
       await this.dependencies.onStartRequested();
       this.startOverlay.hidden = true;
+      // Auto-listening may have been enabled during startup; keep the button
+      // honest about it.
+      this.updateMicButton(this.dependencies.speechInput.isListening());
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.startOverlay.textContent = `llm-o-lantern could not start: ${message}`;

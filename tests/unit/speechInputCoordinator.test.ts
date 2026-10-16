@@ -100,12 +100,16 @@ type ConversationDouble = {
   interrupts: () => number;
 };
 
-function createConversationDouble(): ConversationDouble {
+function createConversationDouble(character: CharacterController): ConversationDouble {
   const submissions: string[] = [];
   let interruptCount = 0;
   const double = {
     interrupt: (): void => {
       interruptCount += 1;
+      // Mirror the real coordinator: interrupting drives the character's
+      // INTERRUPTED state, which is what makes the following
+      // visitorSpeechStarted land in LISTENING.
+      character.interruptionBegan();
     },
     submitUtterance: async (text: string): Promise<void> => {
       submissions.push(text);
@@ -144,7 +148,7 @@ function createHarness(options: HarnessOptions): Harness {
     }
   });
   const microphone = createMicrophoneDouble();
-  const conversation = createConversationDouble();
+  const conversation = createConversationDouble(character);
   const { fetchImpl, calls } = queueFetch(options.responses);
   const voiceDetector = new VoiceActivityDetector({
     startThreshold: 0.045,
@@ -179,6 +183,19 @@ function quietFrame(): Float32Array {
   const frame = new Float32Array(10);
   frame.fill(0.001);
   return frame;
+}
+
+function amplitudeFrame(amplitude: number): Float32Array {
+  const frame = new Float32Array(10);
+  frame.fill(amplitude);
+  return frame;
+}
+
+function driveToSpeaking(character: CharacterController): void {
+  character.visitorSpeechStarted();
+  character.turnSubmitted();
+  character.speechPrepared();
+  character.playbackStarted();
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -302,6 +319,47 @@ describe("SpeechInputCoordinator", () => {
 
     expect(harness.calls).toHaveLength(0);
     expect(harness.conversation.submissions).toEqual([]);
+  });
+
+  it("does not self-interrupt on moderate echo while the character speaks", async () => {
+    const harness = createHarness({
+      responses: [],
+      useInjectedFetch: true
+    });
+    await harness.speechInput.enableAutoListening();
+    driveToSpeaking(harness.character);
+
+    const interruptsBefore = harness.conversation.interrupts();
+    for (let index = 0; index < 25; index += 1) {
+      harness.microphone.deliverFrame(amplitudeFrame(0.06));
+    }
+
+    expect(harness.conversation.interrupts()).toBe(interruptsBefore);
+    expect(harness.character.getState()).toBe("SPEAKING");
+  });
+
+  it("lets a loud visitor barge-in stop the pumpkin immediately", async () => {
+    const harness = createHarness({
+      responses: [jsonResponse({ text: "wait stop", confidence: null })],
+      useInjectedFetch: true
+    });
+    await harness.speechInput.enableAutoListening();
+    driveToSpeaking(harness.character);
+    const interruptsBefore = harness.conversation.interrupts();
+
+    for (let index = 0; index < 12; index += 1) {
+      harness.microphone.deliverFrame(amplitudeFrame(0.5));
+    }
+
+    expect(harness.conversation.interrupts()).toBe(interruptsBefore + 1);
+    expect(harness.character.getState()).toBe("LISTENING");
+
+    for (let index = 0; index < 25; index += 1) {
+      harness.microphone.deliverFrame(quietFrame());
+    }
+    await flushMicrotasks();
+
+    expect(harness.conversation.submissions).toEqual(["wait stop"]);
   });
 
   it("calls the global fetch as a bare function, not as a method (browser Illegal invocation guard)", async () => {

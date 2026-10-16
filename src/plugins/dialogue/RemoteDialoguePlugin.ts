@@ -38,7 +38,7 @@ export const REMOTE_PROVIDER_PRESETS: Record<string, RemoteProviderPreset> = {
     baseUrl: "https://openrouter.ai/api/v1",
     style: "openai",
     apiKeyEnv: "OPENROUTER_API_KEY",
-    defaultModel: "nvidia/nemotron-3.5-super-vl"
+    defaultModel: "nvidia/nemotron-3.5-super-vl:free"
   },
   groq: {
     label: "Groq",
@@ -128,8 +128,13 @@ type ChatMessage = {
   content: string;
 };
 
+type OpenAiChatMessage = {
+  content?: unknown;
+  reasoning?: unknown;
+};
+
 type OpenAiChatCompletion = {
-  choices?: Array<{ message?: { content?: unknown } }>;
+  choices?: Array<{ message?: OpenAiChatMessage }>;
 };
 
 type AnthropicMessagesResponse = {
@@ -145,6 +150,49 @@ function bodyExcerpt(text: string): string {
 
 function isAbort(error: unknown, combined: AbortSignal): boolean {
   return combined.aborted || (error instanceof DOMException && error.name === "AbortError");
+}
+
+/**
+ * Reasoning models vary in where they put the answer. Prefer `content`
+ * (string or multimodal parts array), fall back to `reasoning` so a model
+ * that spent the whole token budget thinking still produces something usable
+ * for the response processor to salvage.
+ */
+function extractMessageText(message: OpenAiChatMessage): string | null {
+  const content = message.content;
+  if (typeof content === "string" && content.trim() !== "") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const part of content) {
+      if (
+        typeof part === "object" &&
+        part !== null &&
+        (part as Record<string, unknown>).type === "text" &&
+        typeof (part as Record<string, unknown>).text === "string"
+      ) {
+        parts.push((part as Record<string, unknown>).text as string);
+      }
+    }
+    const joined = parts.join("").trim();
+    if (joined !== "") {
+      return joined;
+    }
+  }
+  const reasoning = message.reasoning;
+  if (typeof reasoning === "string" && reasoning.trim() !== "") {
+    return reasoning;
+  }
+  return null;
+}
+
+function describeMessageShape(message: OpenAiChatMessage): string {
+  return JSON.stringify({
+    keys: Object.keys(message),
+    contentType: message.content === null ? "null" : Array.isArray(message.content) ? "array" : typeof message.content,
+    reasoningType: message.reasoning === undefined ? "missing" : typeof message.reasoning
+  });
 }
 
 function buildStructuredOutputDirective(request: DialogueRequest): string {
@@ -332,9 +380,20 @@ export class RemoteDialoguePlugin {
     } catch {
       throw new Error(`Remote provider "${resolved.preset.label}" returned an unexpected response shape`);
     }
-    const content = parsed?.choices?.[0]?.message?.content;
-    if (typeof content !== "string") {
+    const message = parsed?.choices?.[0]?.message;
+    if (typeof message !== "object" || message === null) {
       throw new Error(`Remote provider "${resolved.preset.label}" returned an unexpected response shape`);
+    }
+    const content = extractMessageText(message);
+    if (content === null) {
+      this.logger.warn("Remote provider returned a message without usable text", {
+        provider: resolved.preset.label,
+        model: resolved.model,
+        shape: describeMessageShape(message)
+      });
+      throw new Error(
+        `Remote provider "${resolved.preset.label}" returned an unexpected response shape (${describeMessageShape(message)})`
+      );
     }
     return content;
   }

@@ -89,4 +89,32 @@ describe("VoiceActivityDetector", () => {
     expect(floor).toBeLessThan(initial); // fell toward the 0.001 quiet level
     expect(floor).toBeLessThanOrEqual(0.002); // bounded: 100 frames of 0.001 leaves it just above 0.001
   });
+
+  it("raises the gate with setThresholdScale without touching the noise floor", () => {
+    const detector = createDetector();
+    feed(detector, 0.001, 50);
+    const floorBefore = detector.getNoiseFloor();
+
+    detector.setThresholdScale(2);
+    // 0.06 rms passes the 0.045 base gate but not the scaled 0.09 gate.
+    expect(feed(detector, 0.06, 20).every((result) => result === "silence")).toBe(true);
+    expect(detector.getNoiseFloor()).not.toBe(floorBefore); // adaptation still runs at scale 2
+
+    detector.setThresholdScale(1);
+    expect(feed(detector, 0.06, 15)).toContain("speech-start");
+  });
+
+  it("freezes noise-floor adaptation while disabled and resumes after", () => {
+    const detector = createDetector();
+    feed(detector, 0.001, 50);
+
+    detector.setAdaptationEnabled(false);
+    const frozen = detector.getNoiseFloor();
+    feed(detector, 0.5, 100);
+    expect(detector.getNoiseFloor()).toBe(frozen);
+
+    detector.setAdaptationEnabled(true);
+    feed(detector, 0.5, 100);
+    expect(detector.getNoiseFloor()).toBeGreaterThan(frozen);
+  });
 });

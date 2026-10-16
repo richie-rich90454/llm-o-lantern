@@ -28,10 +28,10 @@
     "remote": {
       "preset": "openrouter",
       "baseUrl": null,
-      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "model": null,
       "apiKeyEnv": null,
       "temperature": 0.8,
-      "maxTokens": 220,
+      "maxTokens": 800,
       "timeoutMs": 30000,
       "useJsonResponseFormat": true,
       "acknowledgeRemoteProcessing": true

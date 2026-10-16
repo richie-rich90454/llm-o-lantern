@@ -55,6 +55,18 @@ describe("ApplicationConfiguration.load", () => {
     expect(config.value.dialogue.ollama.model).toBe("env-model");
   });
 
+  it("determines the remote dialogue model and preset from the environment", async () => {
+    const fromEnv = await loadConfig(
+      { dialogue: { remote: { model: "file-model", preset: "openai" } } },
+      { LLMOL_DIALOGUE_MODEL: "env-org/env-model:free", LLMOL_DIALOGUE_PRESET: "openrouter" }
+    );
+    expect(fromEnv.value.dialogue.remote.model).toBe("env-org/env-model:free");
+    expect(fromEnv.value.dialogue.remote.preset).toBe("openrouter");
+
+    const withoutEnv = await loadConfig({ dialogue: { remote: { acknowledgeRemoteProcessing: true } } });
+    expect(withoutEnv.value.dialogue.remote.model).toBeNull();
+  });
+
   it("applies documented defaults for missing fields", async () => {
     const config = await loadConfig({});
 

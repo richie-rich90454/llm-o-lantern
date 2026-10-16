@@ -242,10 +242,54 @@ describe("RemoteDialoguePlugin", () => {
 
     expect(stub.calls[0].url).toBe("https://openrouter.ai/api/v1/chat/completions");
     const body = JSON.parse(String(stub.calls[0].init?.body)) as { model: string };
-    expect(body.model).toBe("nvidia/nemotron-3.5-super-vl");
+    expect(body.model).toBe("nvidia/nemotron-3.5-super-vl:free");
     const headers = (stub.calls[0].init?.headers ?? {}) as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer k");
     expect(headers["X-Title"]).toBe("llm-o-lantern");
+  });
+
+  it("falls back to the reasoning field when a reasoning model leaves content null", async () => {
+    const stub = queueFetch([
+      () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { role: "assistant", content: null, reasoning: "{\"text\":\"thought about it\"}" } }]
+          }),
+          { status: 200 }
+        )
+    ]);
+    const plugin = new RemoteDialoguePlugin(makeRemoteConfig({ preset: "openrouter" }), logger, {
+      OPENROUTER_API_KEY: "k"
+    });
+    await plugin.initialize();
+    const response = await plugin.generateResponse(makeDialogueRequest(), new AbortController().signal);
+
+    expect(stub.calls).toHaveLength(1);
+    expect(response.text).toBe("{\"text\":\"thought about it\"}");
+  });
+
+  it("joins multimodal content parts and rejects truly empty messages with a shape report", async () => {
+    const stub = queueFetch([
+      () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { role: "assistant", content: [{ type: "text", text: "Bo" }, { type: "text", text: "o" }] } }]
+          }),
+          { status: 200 }
+        ),
+      () => new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: null } }] }), { status: 200 })
+    ]);
+    const plugin = new RemoteDialoguePlugin(makeRemoteConfig({ preset: "openrouter" }), logger, {
+      OPENROUTER_API_KEY: "k"
+    });
+    await plugin.initialize();
+
+    const joined = await plugin.generateResponse(makeDialogueRequest(), new AbortController().signal);
+    expect(joined.text).toBe("Boo");
+
+    await expect(plugin.generateResponse(makeDialogueRequest(), new AbortController().signal)).rejects.toThrow(
+      /unexpected response shape.*contentType.*null/
+    );
   });
 
   it("rejects initialization when remote processing is not acknowledged", async () => {

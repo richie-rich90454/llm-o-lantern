@@ -68,9 +68,9 @@ export class PumpkinModelPlugin {
       emissiveIntensity: 1.5,
       roughness: 0.5,
       extrudeDepth: 0.02,
-      leftPosition: [-0.42, 0.18, 0.7],
-      rightPosition: [0.42, 0.18, 0.7],
-      yaw: 0.38,
+      leftPosition: [-0.42, 0.18, 0.936],
+      rightPosition: [0.42, 0.18, 0.936],
+      yaw: 0.42,
       tilt: 0.1,
       baseScaleX: 0.36,
       baseScaleY: 0.34,
@@ -94,8 +94,10 @@ export class PumpkinModelPlugin {
       color: 0x2a1204,
       emissiveIntensity: 1.6,
       roughness: 0.55,
-      position: [0, -0.34, 0.8],
-      pitch: -0.12,
+      // The mouth is projected onto this sphere so every vertex sits just
+      // proud of the ribbed pumpkin surface: no intersections, no floating.
+      faceRadius: 1.05,
+      centerY: -0.34,
       minimumHalfWidth: 0.12,
       halfWidthBase: 0.36,
       halfWidthGain: 0.7,
@@ -108,8 +110,7 @@ export class PumpkinModelPlugin {
       opennessRoundLoss: 0.22,
       topProfile: 0.1,
       bottomProfile: 0.08,
-      bottomOpenness: 1.3,
-      cornerBend: 0.1
+      bottomOpenness: 1.3
     },
     teeth: {
       width: 0.46,
@@ -118,7 +119,7 @@ export class PumpkinModelPlugin {
       color: 0x3a2a12,
       emissiveIntensity: 0.8,
       roughness: 0.6,
-      position: [0, -0.28, 0.84],
+      position: [0, -0.26, 0.998],
       visibilityThreshold: 0.05,
       minimumScaleY: 0.01
     },
@@ -212,6 +213,7 @@ export class PumpkinModelPlugin {
         metalness: tuning.body.metalness
       })
     );
+    body.name = "body";
     root.add(body);
 
     const stemPoints: THREE.Vector3[] = [];
@@ -229,6 +231,7 @@ export class PumpkinModelPlugin {
       stemGeometry,
       new THREE.MeshStandardMaterial({ color: this.config.stemColor, roughness: tuning.stem.roughness })
     );
+    stem.name = "stem";
     root.add(stem);
 
     const eyeShape = new THREE.Shape();
@@ -249,13 +252,15 @@ export class PumpkinModelPlugin {
       roughness: tuning.eyes.roughness
     });
     const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+    leftEye.name = "leftEye";
     leftEye.position.set(tuning.eyes.leftPosition[0], tuning.eyes.leftPosition[1], tuning.eyes.leftPosition[2]);
-    leftEye.rotation.y = tuning.eyes.yaw;
+    leftEye.rotation.y = -tuning.eyes.yaw;
     leftEye.rotation.z = tuning.eyes.tilt;
     leftEye.scale.set(this.eyeBaseScaleX, this.eyeBaseScaleY, this.eyeBaseScaleZ);
     const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+    rightEye.name = "rightEye";
     rightEye.position.set(tuning.eyes.rightPosition[0], tuning.eyes.rightPosition[1], tuning.eyes.rightPosition[2]);
-    rightEye.rotation.y = -tuning.eyes.yaw;
+    rightEye.rotation.y = tuning.eyes.yaw;
     rightEye.rotation.z = -tuning.eyes.tilt;
     rightEye.scale.set(this.eyeBaseScaleX, this.eyeBaseScaleY, this.eyeBaseScaleZ);
     root.add(leftEye, rightEye);
@@ -283,8 +288,7 @@ export class PumpkinModelPlugin {
       side: THREE.DoubleSide
     });
     const mouth = new THREE.Mesh(mouthGeometry, mouthMaterial);
-    mouth.position.set(tuning.mouth.position[0], tuning.mouth.position[1], tuning.mouth.position[2]);
-    mouth.rotation.x = tuning.mouth.pitch;
+    mouth.name = "mouth";
     root.add(mouth);
 
     const teethMaterial = new THREE.MeshStandardMaterial({
@@ -297,6 +301,7 @@ export class PumpkinModelPlugin {
       new THREE.BoxGeometry(tuning.teeth.width, tuning.teeth.height, tuning.teeth.depth),
       teethMaterial
     );
+    teeth.name = "teeth";
     teeth.position.set(tuning.teeth.position[0], tuning.teeth.position[1], tuning.teeth.position[2]);
     teeth.visible = false;
     teeth.scale.y = tuning.teeth.minimumScaleY;
@@ -469,6 +474,7 @@ export class PumpkinModelPlugin {
       return;
     }
     const tuning = PumpkinModelPlugin.TUNING.mouth;
+    const verticalSquash = PumpkinModelPlugin.TUNING.body.verticalSquash;
     const positions = parts.mouthPositions;
 
     const halfWidth = Math.max(
@@ -481,6 +487,10 @@ export class PumpkinModelPlugin {
 
     // Parametric grid: a parabolic profile shapes the lip band, and the
     // lower lip drops further than the upper so the mesh reads as a jaw.
+    // Vertices are placed in world space and projected onto a sphere slightly
+    // larger than the ribbed body, so the glowing carve always hugs the
+    // surface instead of intersecting or floating.
+    const radiusSquared = tuning.faceRadius * tuning.faceRadius;
     let vertex = 0;
     for (let column = 0; column < tuning.columns; column += 1) {
       const u = -1 + (2 * column) / (tuning.columns - 1);
@@ -488,10 +498,12 @@ export class PumpkinModelPlugin {
       const topY = tuning.topProfile * profile + openness * profile;
       const bottomY = -tuning.bottomProfile * profile - openness * tuning.bottomOpenness * profile;
       const x = u * halfWidth;
-      const z = -tuning.cornerBend * u * u;
       for (let row = 0; row < tuning.rows; row += 1) {
         const v = row / (tuning.rows - 1);
-        positions.setXYZ(vertex, x, topY * (1 - v) + bottomY * v, z);
+        const worldY = tuning.centerY + topY * (1 - v) + bottomY * v;
+        const normalizedY = worldY / verticalSquash;
+        const z = Math.sqrt(Math.max(0.05, radiusSquared - x * x - normalizedY * normalizedY));
+        positions.setXYZ(vertex, x, worldY, z);
         vertex += 1;
       }
     }

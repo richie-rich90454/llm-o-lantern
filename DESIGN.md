@@ -88,10 +88,13 @@ plugins: `character.pumpkin`, `microphone.browser`, `audio.playback-webaudio`.
 - Dialogue: `OllamaDialoguePlugin` (native `/api/chat`, JSON mode,
   keep-alive, timeout); `RemoteDialoguePlugin` (14 presets, OpenAI or
   Anthropic wire formats; the shipped default is the OpenRouter preset on
-  `nvidia/nemotron-3.5-super-vl`; requires `acknowledgeRemoteProcessing: true`
-  and a backend-environment key, and degrades to unavailable with a warning
-  when the key is missing); `ScriptedDialoguePlugin` (rules plus rotating
-  lines, always available).
+  `nvidia/nemotron-3.5-super-vl:free`, selected through the
+  `LLMOL_DIALOGUE_MODEL` environment variable; requires
+  `acknowledgeRemoteProcessing: true` and a backend-environment key, and
+  degrades to unavailable with a warning when the key is missing); the
+  OpenAI-style path tolerates reasoning models (string content, multimodal
+  content parts, or a `reasoning`-only message) instead of failing on shape;
+  `ScriptedDialoguePlugin` (rules plus rotating lines, always available).
 - Personality: `HauntedPumpkinPersonalityPlugin` - six emotions (`neutral,
   amused, suspicious, dramatic, delighted, grumpy`), six deliveries (`normal,
   deadpan, dramatic, whisper, fast, slow`), a 280-character limit, seven
@@ -315,6 +318,8 @@ each path.
   missing; whisper auto-start degrades the same way when its files are absent.
   `plugins.additional` cannot duplicate a primary selection.
 - Environment overrides: `LLMOL_HOST`, `LLMOL_PORT`, `LLMOL_LOG_LEVEL`,
+  `LLMOL_DIALOGUE_MODEL` (the remote provider's model id; this is how the
+  model is selected without code or JSON edits), `LLMOL_DIALOGUE_PRESET`,
   `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_KEEP_ALIVE`,
   `LLMOL_STT_BASE_URL`, `LLMOL_TTS_BASE_URL`. API keys are read only from the
   backend environment, named by `apiKeyEnv` configuration fields.
@@ -328,7 +333,8 @@ each path.
   per-session and bounded (16 messages / 8000 characters), cleared on reset,
   purged after 30 minutes idle (checked every 60 s); no cross-visitor history.
 - The shipped configuration selects remote dialogue (OpenRouter, free
-  `nvidia/nemotron-3.5-super-vl`) with the explicit acknowledgment flag set;
+  `nvidia/nemotron-3.5-super-vl:free` chosen via `LLMOL_DIALOGUE_MODEL`) with
+  the explicit acknowledgment flag set;
   selecting `dialogue.ollama` or `dialogue.scripted` in the config file
   restores fully offline operation. Enabling or switching remote providers
   requires the consent flag plus a backend-environment key. Keys never reach

@@ -47,12 +47,14 @@ validated, and initialized at startup.
 
 - Conversational dialogue with three selectable provider plugins: the remote
   plugin shipped as the default (OpenRouter with the free
-  `nvidia/nemotron-3.5-super-vl` model via the OpenAI-compatible Chat
-  Completions API, with the required `acknowledgeRemoteProcessing` consent set
-  in the shipped configuration; 13 other presets available), the local Ollama
-  plugin as a drop-in alternative, and a scripted offline fallback that
-  answers in character with no services running. A missing key or failed
-  provider degrades to the scripted fallback instead of stalling the booth.
+  `nvidia/nemotron-3.5-super-vl:free` model via the OpenAI-compatible Chat
+  Completions API — the model is chosen from `.env` via
+  `LLMOL_DIALOGUE_MODEL`, not hardcoded — with the required
+  `acknowledgeRemoteProcessing` consent set in the shipped configuration; 13
+  other presets available), the local Ollama plugin as a drop-in alternative,
+  and a scripted offline fallback that answers in character with no services
+  running. A missing key or failed provider degrades to the scripted fallback
+  instead of stalling the booth.
 - A named personality ("Gourdrick", a haunted pumpkin) that constrains the
   model to short, in-character, family-friendly replies with a fixed emotion
   and delivery vocabulary, plus discoverable secret phrases.

@@ -5,7 +5,7 @@ booth. It listens through a microphone, answers with an LLM, speaks with a
 neural voice, and drives a live 3D pumpkin face from the speech audio.
 
 Out of the box the dialogue provider is **OpenRouter** using the free
-`nvidia/nemotron-3.5-super-vl` model (paste your key into `.env`). Without a
+`nvidia/nemotron-3.5-super-vl:free` model (paste your key into `.env`). Without a
 key the booth still runs and answers with the scripted fallback dialogue.
 Every provider is replaceable: local Ollama, a self-hosted llama.cpp server,
 any of the other remote presets, local Kokoro/Piper voices, and local Whisper
@@ -121,27 +121,27 @@ Create a key at `https://openrouter.ai/settings/keys`, put it in `.env`:
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-The default model is `nvidia/nemotron-3.5-super-vl` (free) called through the
-OpenAI-compatible Chat Completions API (`POST
-https://openrouter.ai/api/v1/chat/completions`). Both the preset and the model
-are configurable in `llm-o-lantern.config.json`:
+The shipped default model is `nvidia/nemotron-3.5-super-vl:free` (free),
+called through the OpenAI-compatible Chat Completions API (`POST
+https://openrouter.ai/api/v1/chat/completions`). The model is not hardcoded:
+`.env` decides it, so switching models never requires touching code or the
+JSON configuration file.
 
-```jsonc
-"dialogue": {
-  "remote": {
-    "preset": "openrouter",
-    "model": "nvidia/nemotron-3.5-super-vl",
-    "acknowledgeRemoteProcessing": true
-  }
-}
+```bash
+# .env — any OpenRouter model id works, including ":free" variants
+LLMOL_DIALOGUE_MODEL=nvidia/nemotron-3.5-super-vl:free
+# optional: switch the provider preset entirely
+# LLMOL_DIALOGUE_PRESET=openrouter
 ```
 
-Other free OpenRouter models work with the same preset — set
-`dialogue.remote.model` to any id from
-`https://openrouter.ai/models?max_price=0`, for example
+Other free OpenRouter models work the same way — set `LLMOL_DIALOGUE_MODEL`
+to any id from `https://openrouter.ai/models?max_price=0`, for example
 `deepseek/deepseek-r1:free`, `meta-llama/llama-3.3-70b-instruct:free`, or
-`qwen/qwen3-8b:free`. If a model rejects the `json_object` response format,
-the plugin retries once without it automatically.
+`qwen/qwen3-8b:free`. The JSON file can also carry
+`dialogue.remote.model` when no environment override is present; if neither
+sets it, the preset's built-in default applies. If a model rejects the
+`json_object` response format, the plugin retries once without it
+automatically.
 
 To stop sending visitor speech off the machine, set `"plugins": {"dialogue":
 "dialogue.ollama"}` (or `"dialogue.scripted"`) in the config file and use one
@@ -217,7 +217,8 @@ Frequently changed settings:
 |---|---|---|
 | `server.host` / `server.port` | `127.0.0.1` / `8787` | API bind address |
 | `plugins.*` | see file | Plugin selection per category |
-| `dialogue.remote.preset` / `dialogue.remote.model` | `openrouter` / `nvidia/nemotron-3.5-super-vl` | Cloud dialogue provider and model |
+| `dialogue.remote.preset` | `openrouter` in the shipped file | Provider preset; overridable with `LLMOL_DIALOGUE_PRESET` |
+| `dialogue.remote.model` | `null` (preset default) | Model id; set `LLMOL_DIALOGUE_MODEL` in `.env` to choose freely |
 | `dialogue.remote.acknowledgeRemoteProcessing` | `true` in the shipped file | Required consent for cloud dialogue |
 | `dialogue.ollama.model` | `llama3.2` | Local model when `dialogue.ollama` is selected |
 | `dialogue.scripted.fallbackEnabled` | `true` | Scripted replies when the provider fails |
@@ -239,9 +240,9 @@ Frequently changed settings:
 | `logging.level` | `info` | `debug`, `info`, `warn`, `error` |
 
 Environment variables (always win over the JSON file): `LLMOL_HOST`,
-`LLMOL_PORT`, `LLMOL_CONFIG`, `LLMOL_LOG_LEVEL`, `OLLAMA_BASE_URL`,
-`OLLAMA_MODEL`, `OLLAMA_KEEP_ALIVE`, `LLMOL_STT_BASE_URL`,
-`LLMOL_TTS_BASE_URL`.
+`LLMOL_PORT`, `LLMOL_CONFIG`, `LLMOL_LOG_LEVEL`, `LLMOL_DIALOGUE_MODEL`,
+`LLMOL_DIALOGUE_PRESET`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`,
+`OLLAMA_KEEP_ALIVE`, `LLMOL_STT_BASE_URL`, `LLMOL_TTS_BASE_URL`.
 
 ### Remote dialogue providers
 
@@ -273,7 +274,7 @@ set.
 | `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` | `OPENAI_API_KEY` |
 | `anthropic` | Anthropic | `https://api.anthropic.com/v1` | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` |
 | `deepseek` | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` | `DEEPSEEK_API_KEY` |
-| `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` | `nvidia/nemotron-3.5-super-vl` (free) | `OPENROUTER_API_KEY` |
+| `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` | `nvidia/nemotron-3.5-super-vl:free` | `OPENROUTER_API_KEY` |
 | `groq` | Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
 | `mistral` | Mistral | `https://api.mistral.ai/v1` | `mistral-small-latest` | `MISTRAL_API_KEY` |
 | `together` | Together AI | `https://api.together.xyz/v1` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | `TOGETHER_API_KEY` |
