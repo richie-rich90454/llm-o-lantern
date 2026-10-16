@@ -74,14 +74,14 @@ export class NeuralSpeechSynthesisPlugin {
         // running (subtitles only) with a clear pointer to the setup command.
         if (!(await this.fileExists(executablePath))) {
             this.logger.warn(
-                `Piper executable was not found at "${executablePath}"; run \`npm run setup\` to download the local speech ` +
+                `Piper executable was not found at "${executablePath}"; run \`pnpm run setup\` to download the local speech ` +
                     "services. The booth will show subtitles without audio until then.",
             );
             return;
         }
         if (!(await this.fileExists(voiceModelPath))) {
             this.logger.warn(
-                `Piper voice model was not found at "${voiceModelPath}"; run \`npm run setup\` to download the local speech ` +
+                `Piper voice model was not found at "${voiceModelPath}"; run \`pnpm run setup\` to download the local speech ` +
                     "services. The booth will show subtitles without audio until then.",
             );
             return;
@@ -214,7 +214,7 @@ export class NeuralSpeechSynthesisPlugin {
         const executablePath = resolve(process.cwd(), this.config.piper.executablePath);
         if (!(await this.fileExists(executablePath))) {
             throw new Error(
-                `Piper is not installed at "${executablePath}"; run \`npm run setup\` to download the local speech services`,
+                `Piper is not installed at "${executablePath}"; run \`pnpm run setup\` to download the local speech services`,
             );
         }
         const piperDirectory = dirname(executablePath);

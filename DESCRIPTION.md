@@ -36,7 +36,7 @@ The project is built as a small plugin platform, not a monolith: every capabilit
 ## Constraints
 
 - Runs on a single booth machine; one visitor conversation at a time per page load. The browser must support WebGL and the Web Audio API.
-- The shipped configuration uses OpenRouter cloud dialogue (explicitly acknowledged) while speech recognition and speech synthesis run locally from the self-contained `services/` directory that `npm run setup` fills with whisper.cpp and Piper; selecting `dialogue.ollama` or `dialogue.scripted` returns the whole experience to fully offline, and the scripted fallback keeps the character talking if any provider dies.
+- The shipped configuration uses OpenRouter cloud dialogue (explicitly acknowledged) while speech recognition and speech synthesis run locally from the self-contained `services/` directory that `pnpm run setup` fills with whisper.cpp and Piper; selecting `dialogue.ollama` or `dialogue.scripted` returns the whole experience to fully offline, and the scripted fallback keeps the character talking if any provider dies.
 - Latency matters more than sophistication: replies are capped (280 characters by default) so synthesis and lip-sync stay short.
 - The booth is dark and loud; the design leans on subtitles, push-to-talk, a large state badge, and operator controls.
 - No accounts, no analytics, no persistence; local providers and scripted mode run with no cloud dependency at all. Non-goals: multi-character scenes, persistent visitor history, mobile apps.

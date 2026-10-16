@@ -56,9 +56,9 @@ These are the rules the codebase is written to. They describe the existing code,
 
 ## Workflow
 
-1. `npm run typecheck` must pass.
-2. `npm test` must pass.
-3. `npm run build` must pass.
+1. `pnpm run typecheck` must pass.
+2. `pnpm test` must pass.
+3. `pnpm run build` must pass.
 4. Manual verification for anything the tests cannot see (rendering, audio, microphone), with the local services up as needed.
 
 No code is merged or committed unless it passes all four steps; the typecheck -> tests -> build order is the expected local loop. Commits happen only when explicitly requested.

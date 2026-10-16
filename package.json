@@ -4,12 +4,13 @@
     "private": true,
     "description": "A modular, local-first, conversational 3D jack-o'-lantern for a Halloween booth.",
     "type": "module",
+    "packageManager": "pnpm@12.14.0",
     "engines": {
         "node": ">=20.11"
     },
     "scripts": {
         "setup": "tsx scripts/setupServices.ts",
-        "dev": "concurrently -n api,web -c yellow,magenta \"npm:dev:server\" \"npm:dev:web\"",
+        "dev": "concurrently -n api,web -c yellow,magenta \"pnpm:dev:server\" \"pnpm:dev:web\"",
         "dev:server": "tsx watch src/server/server.ts",
         "dev:web": "vite",
         "build": "vite build",

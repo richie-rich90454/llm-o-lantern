@@ -27,7 +27,7 @@ export function isLocalHost(hostname: string): boolean {
 
 /**
  * Starts and supervises the local whisper.cpp speech recognition server when
- * one is configured and installed (see `npm run setup`). The booth backend
+ * one is configured and installed (see `pnpm run setup`). The booth backend
  * owns the process: it starts it before the HTTP listener and terminates it on
  * shutdown. If the service is missing or fails to start, the booth keeps
  * running with speech recognition marked unavailable instead of crashing.
@@ -85,7 +85,7 @@ export class LocalSpeechServiceSupervisor {
 
         if (stt.whisperCpp.executablePath === "" || stt.whisperCpp.modelPath === "") {
             this.logger.warn(
-                "Whisper auto-start is enabled but no executable/model is configured; run `npm run setup` to download " +
+                "Whisper auto-start is enabled but no executable/model is configured; run `pnpm run setup` to download " +
                     "the local speech services, or start a whisper server yourself",
             );
             return;
@@ -95,7 +95,7 @@ export class LocalSpeechServiceSupervisor {
         const modelPath = resolve(process.cwd(), stt.whisperCpp.modelPath);
         if (!(await fileExists(executablePath)) || !(await fileExists(modelPath))) {
             this.logger.warn(
-                `Whisper server not found (${executablePath}). Run \`npm run setup\` to download the local speech services`,
+                `Whisper server not found (${executablePath}). Run \`pnpm run setup\` to download the local speech services`,
             );
             return;
         }

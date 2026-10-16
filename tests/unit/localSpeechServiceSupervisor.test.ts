@@ -100,7 +100,7 @@ describe("LocalSpeechServiceSupervisor", () => {
         await supervisor.start();
 
         expect(supervisor.isRunning()).toBe(false);
-        expect(entries.some((entry) => entry.message.includes("npm run setup"))).toBe(true);
+        expect(entries.some((entry) => entry.message.includes("pnpm run setup"))).toBe(true);
     });
 
     it("warns with the setup hint when the configured files do not exist", async () => {
@@ -114,7 +114,7 @@ describe("LocalSpeechServiceSupervisor", () => {
         await supervisor.start();
 
         expect(supervisor.isRunning()).toBe(false);
-        expect(entries.some((entry) => entry.message.includes("npm run setup"))).toBe(true);
+        expect(entries.some((entry) => entry.message.includes("pnpm run setup"))).toBe(true);
     });
 
     it("stop() is safe when nothing is running", async () => {

@@ -54,7 +54,7 @@ describe("NeuralSpeechSynthesisPlugin (piper engine)", () => {
             {},
         );
         await expect(missing.initialize()).resolves.toBeUndefined();
-        expect(entries.some((entry) => entry.message.includes("npm run setup"))).toBe(true);
+        expect(entries.some((entry) => entry.message.includes("pnpm run setup"))).toBe(true);
     });
 
     it("verifies installed piper files and reports availability", async () => {
@@ -107,7 +107,7 @@ describe("NeuralSpeechSynthesisPlugin (piper engine)", () => {
                 { emotion: "neutral", delivery: "normal" },
                 new AbortController().signal,
             ),
-        ).rejects.toThrow(/npm run setup/);
+        ).rejects.toThrow(/pnpm run setup/);
     });
 
     it("spawns the configured executable with absolute paths and reports a nonzero exit", async () => {

@@ -2,7 +2,7 @@
 
 Status: all seven milestones are implemented in this repository. The implementation is finished and verified by the automated test suite; the end-to-end experience additionally requires locally running services, a microphone, and a browser (see "Integration points requiring hardware").
 
-Standard verification: `npm run typecheck`, `npm test`, `npm run build`, then `npm start` and a manual pass in the browser. "Status" below is per milestone; each is implemented unless stated otherwise.
+Standard verification: `pnpm run typecheck`, `pnpm test`, `pnpm run build`, then `pnpm start` and a manual pass in the browser. "Status" below is per milestone; each is implemented unless stated otherwise.
 
 ## Milestone 01 - Plugin foundation
 
@@ -10,7 +10,7 @@ Built: `PluginRegistry` and `PluginManager` (selection, metadata validation, per
 
 Acceptance criteria as delivered: startup fails with a precise error for unknown ids, duplicates, id/category mismatches, missing required methods, missing dependencies, and cycles; initialization follows dependency order and shutdown reverses it; a failed initialization rolls back earlier plugins; both sides load their plugin sets from the same configuration file.
 
-Verify locally: `npm test` (plugin manager and configuration files), `npm run typecheck`, then start the server and check that `GET http://127.0.0.1:8787/api/health` lists the eight server plugins. Break the configuration on purpose and confirm startup names the problem.
+Verify locally: `pnpm test` (plugin manager and configuration files), `pnpm run typecheck`, then start the server and check that `GET http://127.0.0.1:8787/api/health` lists the eight server plugins. Break the configuration on purpose and confirm startup names the problem.
 
 Status: implemented.
 
@@ -20,7 +20,7 @@ Built: `SceneController` (dark scene, fog, camera, flickering warm light, ground
 
 Acceptance criteria as delivered: a pumpkin renders with the configured `characterModel.*` colors; it blinks, sways, bobs, and shows state-dependent glow; the mouth deforms from the 8 viseme channels with a jaw-like lower lip; no external model assets are required.
 
-Verify locally: `npm run dev`, open `http://localhost:5173`, click "Wake the pumpkin". To skip the microphone prompt, set `booth.autoListen` to `false` first; the pumpkin still idles. `npm test` covers the mixer and expression logic.
+Verify locally: `pnpm run dev`, open `http://localhost:5173`, click "Wake the pumpkin". To skip the microphone prompt, set `booth.autoListen` to `false` first; the pumpkin still idles. `pnpm test` covers the mixer and expression logic.
 
 Status: implemented.
 
@@ -30,7 +30,7 @@ Built: `NeuralSpeechSynthesisPlugin` (Kokoro-FastAPI, Piper executable, generic 
 
 Acceptance criteria as delivered: text -> WAV -> `SpeechTiming` -> `FacialAnimationTrack` produces an ordered, duration-bounded track for any synthesized audio; provider timing is used when present, otherwise energy alignment, with estimation as the last resort, and the source is reported in the response; the mouth follows the audio playback clock, so audio and face cannot drift within a turn.
 
-Verify locally: start Kokoro (`docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest`), `npm run dev`, wake the pumpkin, submit a turn. Diagnostics (D) shows `energy-alignment` or `estimated` and the audio length. `npm test` covers timing, viseme, lip-sync, facial controller, and WAV logic.
+Verify locally: start Kokoro (`docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest`), `pnpm run dev`, wake the pumpkin, submit a turn. Diagnostics (D) shows `energy-alignment` or `estimated` and the audio length. `pnpm test` covers timing, viseme, lip-sync, facial controller, and WAV logic.
 
 Status: implemented. TTS providers return no timing metadata today; see "Risks and open decisions".
 
@@ -40,7 +40,7 @@ Built: `OllamaDialoguePlugin` (native `/api/chat`, JSON mode, keep-alive, timeou
 
 Acceptance criteria as delivered: the `{"text", "emotion", "delivery"}` contract is enforced end to end - prose, fenced JSON, and embedded JSON all resolve, and invalid emotions/deliveries fall back to defaults; replies are clamped to the smaller of the personality and configuration limits; with the provider down, the scripted fallback answers in character and the turn reports `dialogueFallback: true`; memory is per-session, bounded at 16 messages / 8000 characters, cleared by reset, and purged after 30 minutes.
 
-Verify locally: `ollama pull llama3.2`, `ollama serve`, then `npm run dev` and hold a short conversation. Stop Ollama and repeat: replies come from the scripted fallback (diagnostics "Fallback: active"). Set `plugins.dialogue` to `dialogue.scripted` for deliberate offline operation. `npm test` covers the dialogue plugins, response processor, personality, memory, and session manager.
+Verify locally: `ollama pull llama3.2`, `ollama serve`, then `pnpm run dev` and hold a short conversation. Stop Ollama and repeat: replies come from the scripted fallback (diagnostics "Fallback: active"). Set `plugins.dialogue` to `dialogue.scripted` for deliberate offline operation. `pnpm test` covers the dialogue plugins, response processor, personality, memory, and session manager.
 
 Status: implemented.
 
@@ -50,7 +50,7 @@ Built: `MicrophoneController` (permission handling, 20 s ring buffer, zero-gain 
 
 Acceptance criteria as delivered: speaking produces a turn without touching the keyboard in auto-listen mode; holding T (or the button) works in noisy conditions; utterances under 250 ms and empty transcriptions are discarded silently; transcription outages surface as operator-facing errors; microphone denial produces a specific, actionable message.
 
-Verify locally: start the whisper.cpp server on port 8082, `npm run dev`, wake the pumpkin (grants microphone), and speak. Subtitles show the visitor text, then the reply. `npm test` covers VAD and the recognition plugin.
+Verify locally: start the whisper.cpp server on port 8082, `pnpm run dev`, wake the pumpkin (grants microphone), and speak. Subtitles show the visitor text, then the reply. `pnpm test` covers VAD and the recognition plugin.
 
 Status: implemented. Requires a microphone and a running local STT service to verify end to end.
 
@@ -60,7 +60,7 @@ Built: `ExpressionController` (per-state presets, deterministic phase-locked idl
 
 Acceptance criteria as delivered: each state has a distinct look (idle breathing, alert listening, dimmed thinking, brightening preparation, energetic speaking, flared interruption, subdued recovering); emotion reactions play once per turn and decay to baseline; the expression layer never writes viseme weights, and identical seed + dt sequences produce identical output.
 
-Verify locally: `npm run dev`, wake the pumpkin, and compare the state badge with the visible behavior; interrupt it while speaking to see the flared INTERRUPTED look. `npm test` covers the expression controller and mixer.
+Verify locally: `pnpm run dev`, wake the pumpkin, and compare the state badge with the visible behavior; interrupt it while speaking to see the flared INTERRUPTED look. `pnpm test` covers the expression controller and mixer.
 
 Status: implemented.
 
@@ -68,9 +68,9 @@ Status: implemented.
 
 Built: health endpoint with per-plugin probes and 10 s caching; diagnostics endpoint (turn counts, fallback count, average per-stage latency, timing source distribution, recent errors, active sessions); booth UI (start overlay for audio unlock, state badge, subtitles, error banner with log, diagnostics panel, M/T/R/D controls, health polling every 15 s); stale-turn rejection on both ends; interrupt with abort and fade; degraded subtitle mode; one-action reset; static `dist/` serving with traversal guard and security headers; the full Vitest suite plus opt-in live-service smoke tests.
 
-Acceptance criteria as delivered: no failure leaves the character stuck (every error path ends in RECOVERING -> IDLE/LISTENING, reset works from any state); a stale turn id is rejected with 409 and ignored silently in the browser; killing TTS degrades to subtitles; killing the backend raises the banner and restarting recovers without a reload; `npm run build && npm start` serves UI and API from one port with no dev tooling.
+Acceptance criteria as delivered: no failure leaves the character stuck (every error path ends in RECOVERING -> IDLE/LISTENING, reset works from any state); a stale turn id is rejected with 409 and ignored silently in the browser; killing TTS degrades to subtitles; killing the backend raises the banner and restarting recovers without a reload; `pnpm run build && pnpm start` serves UI and API from one port with no dev tooling.
 
-Verify locally: `npm run build`, `npm start`, open `http://127.0.0.1:8787`, run a turn, press R and D, stop the backend mid-session and watch the banner. With all services up: `INTEGRATION=1 npx vitest run tests/integration` (PowerShell: `$env:INTEGRATION="1"; npx vitest run tests/integration`).
+Verify locally: `pnpm run build`, `pnpm start`, open `http://127.0.0.1:8787`, run a turn, press R and D, stop the backend mid-session and watch the banner. With all services up: `INTEGRATION=1 npx vitest run tests/integration` (PowerShell: `$env:INTEGRATION="1"; npx vitest run tests/integration`).
 
 Status: implemented.
 
@@ -80,8 +80,8 @@ Status: implemented.
 | --- | --- | --- |
 | OpenRouter (https://openrouter.ai/api/v1) | Shipped dialogue provider | Scripted fallback (`dialogueFallback: true`); the booth keeps working |
 | Ollama (localhost:11434) | Local dialogue when `dialogue.ollama` is selected | Scripted fallback (if enabled) or a failed turn |
-| Piper (`services/piper`, installed by `npm run setup`) | Speech output + lip-sync | Subtitles only (`degraded: true`) with a setup hint in the log |
-| whisper.cpp (`services/whisper`, auto-started by the backend) | Speech input | Booth runs without voice input; logs name `npm run setup` |
+| Piper (`services/piper`, installed by `pnpm run setup`) | Speech output + lip-sync | Subtitles only (`degraded: true`) with a setup hint in the log |
+| whisper.cpp (`services/whisper`, auto-started by the backend) | Speech input | Booth runs without voice input; logs name `pnpm run setup` |
 | Kokoro-FastAPI (localhost:8880) | Alternative speech synthesis engine | n/a unless selected |
 | Microphone + browser permission | Voice capture | Visual-only booth; push-to-talk also unusable |
 | WebGL2-capable browser | The 3D character | The frontend does not start |

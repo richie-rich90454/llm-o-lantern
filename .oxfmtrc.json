@@ -18,7 +18,7 @@
     "ignorePatterns": [
         "node_modules/",
         "dist/",
-        "package-lock.json",
+        "pnpm-lock.yaml",
         "*.min.js",
         "*.min.css",
         ".DS_Store",

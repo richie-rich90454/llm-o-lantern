@@ -11,9 +11,9 @@
  * system-wide. Re-running is safe: existing files are skipped.
  *
  * Usage:
- *   npm run setup                    (whisper model: base.en)
- *   npm run setup -- --model small.en
- *   npm run setup -- --force
+ *   pnpm run setup                    (whisper model: base.en)
+ *   pnpm run setup -- --model small.en
+ *   pnpm run setup -- --force
  */
 import { execFileSync } from "node:child_process";
 import { cp, mkdir, rename, rm, stat } from "node:fs/promises";
@@ -290,7 +290,9 @@ async function main(): Promise<void> {
 
     console.log("");
     console.log("Local speech services are ready.");
-    console.log("  Speech input : services/whisper/whisper-server.exe (auto-started by npm start)");
+    console.log(
+        "  Speech input : services/whisper/whisper-server.exe (auto-started by pnpm start)",
+    );
     console.log(`  Speech output: services/piper/piper.exe + voices/${PIPER_VOICE_NAME}.onnx`);
     console.log("The shipped llm-o-lantern.config.json already points at these paths.");
 }
@@ -299,7 +301,7 @@ main().catch((error) => {
     console.error("");
     console.error(`Setup failed: ${error instanceof Error ? error.message : String(error)}`);
     console.error(
-        "Nothing outside this directory was modified; fix the problem and run `npm run setup` again.",
+        "Nothing outside this directory was modified; fix the problem and run `pnpm run setup` again.",
     );
     process.exitCode = 1;
 });

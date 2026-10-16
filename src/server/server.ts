@@ -96,7 +96,7 @@ async function serveStatic(
             ...SECURITY_HEADERS,
         });
         response.end(
-            "The web build is missing. Run `npm run build` (or `npm run dev` for development).",
+            "The web build is missing. Run `pnpm run build` (or `pnpm run dev` for development).",
         );
         return;
     }
