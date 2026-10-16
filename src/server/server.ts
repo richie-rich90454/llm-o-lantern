@@ -196,8 +196,11 @@ async function isDirectory(path: string): Promise<boolean> {
 const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
 if (entryUrl !== "" && import.meta.url === entryUrl) {
   const application = new Application();
-  application.start().catch((error) => {
+  application.start().catch(async (error) => {
     console.error(error instanceof Error ? error.message : error);
+    // A failed start may have already launched supervised child processes
+    // (the whisper server); shut them down so the process can exit cleanly.
+    await application.shutdown().catch(() => {});
     process.exitCode = 1;
   });
 

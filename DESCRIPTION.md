@@ -84,10 +84,11 @@ validated, and initialized at startup.
 - Runs on a single booth machine; one visitor conversation at a time per page
   load. The browser must support WebGL and the Web Audio API.
 - The shipped configuration uses OpenRouter cloud dialogue (explicitly
-  acknowledged) while speech recognition and speech synthesis expect local
-  Kokoro and whisper servers; selecting `dialogue.ollama` or
-  `dialogue.scripted` returns the whole experience to fully offline, and the
-  scripted fallback keeps the character talking if any provider dies.
+  acknowledged) while speech recognition and speech synthesis run locally from
+  the self-contained `services/` directory that `npm run setup` fills with
+  whisper.cpp and Piper; selecting `dialogue.ollama` or `dialogue.scripted`
+  returns the whole experience to fully offline, and the scripted fallback
+  keeps the character talking if any provider dies.
 - Latency matters more than sophistication: replies are capped (280 characters
   by default) so synthesis and lip-sync stay short.
 - The booth is dark and loud; the design leans on subtitles, push-to-talk, a

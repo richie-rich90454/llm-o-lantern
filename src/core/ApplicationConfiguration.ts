@@ -58,7 +58,7 @@ export type SpeechRecognitionConfig = {
   engine: "whisper-cpp" | "openai-compatible";
   timeoutMs: number;
   language: string | null;
-  whisperCpp: { baseUrl: string };
+  whisperCpp: { baseUrl: string; executablePath: string; modelPath: string; autoStart: boolean };
   openaiCompatible: { baseUrl: string; apiKeyEnv: string | null; model: string };
 };
 
@@ -407,7 +407,16 @@ function readConfig(root: RawRecord, problems: string[]): AppConfig {
       timeoutMs: readNumber(speechRecognition, "timeoutMs", "speechRecognition.timeoutMs", problems, 15000, 1000, 120000),
       language: readStringOrNull(speechRecognition, "language", "speechRecognition.language", problems, null),
       whisperCpp: {
-        baseUrl: readString(whisperCpp, "baseUrl", "speechRecognition.whisperCpp.baseUrl", problems, "http://127.0.0.1:8082")
+        baseUrl: readString(whisperCpp, "baseUrl", "speechRecognition.whisperCpp.baseUrl", problems, "http://127.0.0.1:8082"),
+        executablePath: readStringAllowEmpty(
+          whisperCpp,
+          "executablePath",
+          "speechRecognition.whisperCpp.executablePath",
+          problems,
+          ""
+        ),
+        modelPath: readStringAllowEmpty(whisperCpp, "modelPath", "speechRecognition.whisperCpp.modelPath", problems, ""),
+        autoStart: readBoolean(whisperCpp, "autoStart", "speechRecognition.whisperCpp.autoStart", problems, true)
       },
       openaiCompatible: {
         baseUrl: readString(sttOpenAi, "baseUrl", "speechRecognition.openaiCompatible.baseUrl", problems, "http://127.0.0.1:8082/v1"),

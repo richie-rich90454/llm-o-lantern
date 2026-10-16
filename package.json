@@ -8,6 +8,7 @@
     "node": ">=20.11"
   },
   "scripts": {
+    "setup": "tsx scripts/setupServices.ts",
     "dev": "concurrently -n api,web -c yellow,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "tsx watch src/server/server.ts",
     "dev:web": "vite",

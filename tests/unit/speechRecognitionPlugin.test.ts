@@ -27,7 +27,7 @@ function makeConfig(overrides: Partial<SpeechRecognitionConfig> = {}): SpeechRec
     engine: "whisper-cpp",
     timeoutMs: 5000,
     language: null,
-    whisperCpp: { baseUrl: "http://127.0.0.1:9999" },
+    whisperCpp: { baseUrl: "http://127.0.0.1:9999", executablePath: "", modelPath: "", autoStart: false },
     openaiCompatible: { baseUrl: "http://127.0.0.1:9999/v1", apiKeyEnv: null, model: "whisper-1" },
     ...overrides
   };

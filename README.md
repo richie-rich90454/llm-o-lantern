@@ -23,27 +23,35 @@ rules.
   Firefox).
 - An OpenRouter API key (free) for cloud dialogue — optional; without it the
   scripted fallback answers.
-- Optional local services for the full offline experience: Ollama or a
-  llama.cpp server (dialogue), Kokoro-FastAPI or Piper (speech synthesis), a
-  whisper.cpp server or any OpenAI-compatible Whisper endpoint (speech
-  recognition), and a microphone.
+- A microphone for voice input (push-to-talk works even if auto-listen does
+  not).
+
+Speech recognition (whisper.cpp) and speech synthesis (Piper) install
+themselves into this directory with `npm run setup`; the booth backend starts
+and stops the whisper server automatically. No Python, Docker, or
+system-wide installs are needed.
 
 ## Quick start
 
 ```bash
 npm install
+npm run setup               # downloads whisper.cpp + Piper into ./services (one time)
 cp .env.example .env        # Windows: copy .env.example .env
 # paste your key from https://openrouter.ai/settings/keys into .env
-npm run dev
+npm start
 ```
 
-`npm run dev` starts the API server (`tsx watch src/server/server.ts`) and the
-Vite dev server together. Open `http://localhost:5173`, click "Wake the
-pumpkin", and allow the microphone when asked.
+Open `http://127.0.0.1:8787`, click "Wake the pumpkin", and allow the
+microphone when asked. The booth talks through Piper and listens through
+whisper.cpp — both started from `./services` — and thinks through OpenRouter.
+`npm run dev` gives the same experience with hot reload (open
+`http://localhost:5173` instead).
 
 Without an OpenRouter key the booth still starts and talks, but every reply
 comes from the scripted fallback (the diagnostics panel shows "Fallback:
-active"). Add the key and restart to hear the real model.
+active"). Add the key and restart to hear the real model. Without
+`npm run setup`, dialogue and subtitles still work and the logs say exactly
+what to run.
 
 For a production-style run on one port:
 
@@ -57,29 +65,53 @@ Open `http://127.0.0.1:8787`. The server serves the built frontend from
 
 | Script | Purpose |
 |---|---|
+| `npm run setup` | Download whisper.cpp + Piper into `./services` (one time; `-- --model small.en` to pick a bigger model, `-- --force` to refresh) |
 | `npm run dev` | API + Vite dev server (proxy `/api` -> `127.0.0.1:8787`) |
 | `npm run dev:server` | API server only, with watch mode |
 | `npm run dev:web` | Vite dev server only (port 5173) |
 | `npm run build` | Build the frontend to `dist/` |
-| `npm start` | Serve `dist/` + API (port 8787) |
+| `npm start` | Serve `dist/` + API, auto-start whisper.cpp (port 8787) |
 | `npm test` | Run the Vitest suite |
 | `npm run test:watch` | Vitest in watch mode |
 | `npm run typecheck` | TypeScript check (`tsc --noEmit`) |
 
 ## Local services
 
-Defaults assume these ports. Each service is independent; see the
-troubleshooting table for what happens when one is missing.
+The speech services are self-contained: `npm run setup` downloads them into
+`./services/` and `npm start` launches whisper.cpp automatically (Piper runs
+per utterance, no server). Ollama and Kokoro remain supported as alternatives.
 
-| Service | Default URL | Used for |
-|---|---|---|
-| llm-o-lantern API | `http://127.0.0.1:8787` | API + static frontend (`npm start`) |
-| Vite dev server | `http://localhost:5173` | Development UI, proxies `/api` |
-| OpenRouter | `https://openrouter.ai/api/v1` | Dialogue (shipped default provider) |
-| Ollama | `http://127.0.0.1:11434` | Dialogue (optional local provider) |
-| Kokoro-FastAPI | `http://127.0.0.1:8880` | Speech synthesis (default engine) |
-| Piper | local executable | Speech synthesis (alternative engine) |
-| whisper.cpp server | `http://127.0.0.1:8082` | Speech recognition (default engine) |
+| Service | Default URL | Used for | Managed by |
+|---|---|---|---|
+| llm-o-lantern API | `http://127.0.0.1:8787` | API + static frontend (`npm start`) | you |
+| Vite dev server | `http://localhost:5173` | Development UI, proxies `/api` | `npm run dev` |
+| OpenRouter | `https://openrouter.ai/api/v1` | Dialogue (shipped default provider) | cloud |
+| whisper.cpp | `http://127.0.0.1:8082` | Speech recognition (default engine) | auto-started by the backend |
+| Piper | `services/piper/piper.exe` | Speech synthesis (default engine) | spawned per reply |
+| Ollama | `http://127.0.0.1:11434` | Dialogue (optional local provider) | you |
+| Kokoro-FastAPI | `http://127.0.0.1:8880` | Speech synthesis (optional engine) | you |
+
+### Setup details
+
+```bash
+npm run setup                 # whisper model base.en (141 MB) + piper + voice
+npm run setup -- --model=small.en   # more accurate Whisper (466 MB)
+npm run setup -- --force      # re-download everything
+```
+
+The installer downloads:
+
+- `services/whisper/` — the latest whisper.cpp Windows binaries plus a
+  `ggml-*.bin` model from Hugging Face
+- `services/piper/` — the Piper Windows build (with `espeak-ng-data`) and the
+  `en_US-lessac-medium` voice in `services/piper/voices/`
+
+`llm-o-lantern.config.json` already points at these paths; the backend starts
+whisper before the HTTP listener and stops it on shutdown. If the services
+are missing, startup logs a warning with the setup command and the booth runs
+with subtitles only. To use a different Piper voice, download the `.onnx` and
+`.onnx.json` files into `services/piper/voices/` and update
+`speechSynthesis.piper.voiceModelPath`.
 
 ### OpenRouter (dialogue, shipped default)
 
@@ -144,41 +176,32 @@ or `start-cpu.sh` (Linux/macOS). The API listens on `http://127.0.0.1:8880`
 `response_format: "wav"`. The voice is `speechSynthesis.kokoro.voice`
 (default `bm_george`).
 
-### Piper (speech synthesis, alternative)
+### Piper (speech synthesis, shipped default)
 
-Download the Piper binary and a voice model (for example
-`en_US-lessac-medium.onnx`) from the Piper releases, then configure:
-
-```jsonc
-"speechSynthesis": {
-  "engine": "piper",
-  "piper": {
-    "executablePath": "C:\\piper\\piper.exe",
-    "voiceModelPath": "C:\\piper\\en_US-lessac-medium.onnx"
-  }
-}
-```
-
-Manual check: `echo "Boo" | piper --model en_US-lessac-medium.onnx
---output_file test.wav`. Both paths must exist or startup fails.
+Piper is installed by `npm run setup` into `services/piper/` together with the
+`en_US-lessac-medium` voice, and it is the default engine; nothing else to do.
+To use a different voice, download its `.onnx` and `.onnx.json` files into
+`services/piper/voices/` and update `speechSynthesis.piper.voiceModelPath`.
+To use a system-wide Piper instead, point both paths in
+`speechSynthesis.piper` wherever you like (they may be absolute). Manual
+check: `echo "Boo" | .\services\piper\piper.exe --model
+.\services\piper\voices\en_US-lessac-medium.onnx --output_file test.wav
+--espeak_data .\services\piper\espeak-ng-data`. If the files are missing the
+booth still runs with subtitles, and the log names `npm run setup`.
 
 ### whisper.cpp (speech recognition)
 
-```bash
-git clone https://github.com/ggml-org/whisper.cpp
-cd whisper.cpp
-cmake -B build
-cmake --build build --config Release
-# Windows:      .\models\download-ggml-model.cmd base.en
-# Linux/macOS:  sh ./models/download-ggml-model.sh base.en
-# Run the server (binary name varies: whisper-server or server):
-.\build\bin\Release\whisper-server.exe -m models\ggml-base.en.bin --port 8082
-```
-
-The app posts multipart audio to `http://127.0.0.1:8082/inference`. Any
+`npm run setup` installs the latest whisper.cpp Windows binaries plus a model
+into `services/whisper/`, and `npm start` launches and supervises the server
+automatically (`speechRecognition.whisperCpp.autoStart`). The app posts
+multipart audio to `http://127.0.0.1:8082/inference`. If a whisper server is
+already running, the backend leaves it alone; if the files are missing, the
+booth runs without voice input and the log names `npm run setup`. Any
 OpenAI-compatible Whisper endpoint also works: set `speechRecognition.engine`
 to `"openai-compatible"` and point `speechRecognition.openaiCompatible.baseUrl`
-at it (optionally with a key via `apiKeyEnv`).
+at it (optionally with a key via `apiKeyEnv`). To build whisper.cpp yourself
+instead, compile it from https://github.com/ggml-org/whisper.cpp and point
+`speechRecognition.whisperCpp.executablePath` / `modelPath` at your binaries.
 
 ## Configuration
 
@@ -200,9 +223,11 @@ Frequently changed settings:
 | `dialogue.scripted.fallbackEnabled` | `true` | Scripted replies when the provider fails |
 | `personality.characterName` | `Gourdrick` | Name shown in the UI |
 | `personality.secretPhraseDiscovery` | `true` | Enable secret-phrase responses |
-| `speechSynthesis.engine` | `kokoro` | `kokoro`, `piper`, or `openai-compatible` |
+| `speechSynthesis.engine` | `piper` in the shipped file (code default `kokoro`) | `piper`, `kokoro`, or `openai-compatible` |
+| `speechSynthesis.piper.*` | `services/piper/...` | Piper executable and voice (see `npm run setup`) |
 | `speechSynthesis.speedAdjustments` | per delivery | Speed multipliers (normal/fast/slow/dramatic/whisper) |
 | `speechRecognition.engine` | `whisper-cpp` | `whisper-cpp` or `openai-compatible` |
+| `speechRecognition.whisperCpp.autoStart` | `true` | Let the backend launch whisper.cpp |
 | `speechRecognition.language` | `null` (auto) | Force a transcription language |
 | `lipSync.coarticulationMs` / `lipSync.minimumHoldMs` | `60` / `40` | Mouth smoothing / keyframe collapsing |
 | `conversation.maxHistoryMessages` | `16` | Bounded per-session history |
@@ -299,10 +324,12 @@ audio or animation immediately, with no restart.
 | Overlay says the backend is not reachable | API server not running | `npm run dev:server` (or `npm run dev`); check `http://127.0.0.1:8787/api/health` |
 | Diagnostics Backend shows "offline" | Same as above | Start the API; the banner clears automatically |
 | "Microphone permission was denied" | Browser permission refused | Allow the microphone for the page and reload |
-| "Speech recognition is offline." | whisper.cpp server not running | Start it on port 8082; health shows `speech-recognition.local` unavailable |
+| "Speech recognition is offline." | whisper.cpp is not running (auto-start disabled, files missing, or it failed to start) | Run `npm run setup`, check the startup log lines tagged `whisper:`, and `http://127.0.0.1:8787/api/health` |
+| "Speech recognizer is unreachable at http://127.0.0.1:8082" | Same as above | Same fix; the whisper server starts with `npm start` unless `whisperCpp.autoStart` is false |
 | Replies are scripted and Fallback shows "active" | No usable dialogue provider (missing or invalid `OPENROUTER_API_KEY`, no OpenRouter credits, rate limited, or a local LLM is down) | Read the terminal warning; put a valid key in `.env` and restart, or select a local provider |
 | Replies time out (`dialogue-timeout`) | Free model very slow or provider unreachable | Raise `dialogue.remote.timeoutMs`; check `/api/health`; for Ollama run `ollama serve` and `ollama pull llama3.2` |
-| No audio, subtitles only | Speech synthesis unreachable | Start Kokoro (`docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest`) or switch `speechSynthesis.engine` to `piper` |
+| No audio, subtitles only | Piper files missing | Run `npm run setup` (installs `services/piper/`), or switch `speechSynthesis.engine` and run a Kokoro server instead |
+| Port 8787 already in use at startup | Another llm-o-lantern instance is running | Stop it, or change `server.port`; the message names the port |
 | Mouth motion looks approximate | Timing source is `energy-alignment` or `estimated` | Expected today (no TTS timing metadata); see PLAN.md open decisions |
 | All providers down | No local services reachable | The scripted fallback keeps the character talking; set `plugins.dialogue` to `dialogue.scripted` for deliberate offline operation |
 | Startup fails mentioning `acknowledgeRemoteProcessing` | `dialogue.remote` selected without consent flag | Set `dialogue.remote.acknowledgeRemoteProcessing` to `true` (this is the explicit consent that visitor speech leaves the machine) |

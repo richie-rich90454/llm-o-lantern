@@ -149,12 +149,15 @@ export class SpeechInputCoordinator {
         signal: abort.signal
       });
       if (!response.ok) {
-        const code = await this.readErrorCode(response);
-        if (code === "stt-unavailable") {
+        const errorInfo = await this.readErrorInfo(response);
+        if (errorInfo.code === "stt-unavailable") {
           this.dependencies.onError?.("Speech recognition is offline.");
           return;
         }
-        throw new Error(`Transcription failed with HTTP ${response.status}`);
+        const message = errorInfo.message ?? `Transcription failed with HTTP ${response.status}`;
+        this.dependencies.logger.warn("Transcription rejected", { status: response.status, message });
+        this.dependencies.onError?.(message);
+        return;
       }
       const payload: unknown = await response.json();
       const text = readTranscriptionText(payload);
@@ -181,22 +184,23 @@ export class SpeechInputCoordinator {
     return Math.round((options.prerollMs / 1000) * microphone.getSampleRate());
   }
 
-  private async readErrorCode(response: Response): Promise<string | null> {
+  private async readErrorInfo(response: Response): Promise<{ code: string | null; message: string | null }> {
     try {
       const payload: unknown = await response.json();
       if (typeof payload === "object" && payload !== null) {
         const error = (payload as Record<string, unknown>).error;
         if (typeof error === "object" && error !== null) {
-          const code = (error as Record<string, unknown>).code;
-          if (typeof code === "string") {
-            return code;
-          }
+          const record = error as Record<string, unknown>;
+          return {
+            code: typeof record.code === "string" ? record.code : null,
+            message: typeof record.message === "string" ? record.message : null
+          };
         }
       }
     } catch {
-      // not JSON; fall through
+      // not JSON; fall through to the generic message
     }
-    return null;
+    return { code: null, message: null };
   }
 }
 

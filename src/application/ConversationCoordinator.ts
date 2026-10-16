@@ -116,11 +116,11 @@ export class ConversationCoordinator {
       });
 
       if (!response.ok) {
-        const errorCode = await this.readErrorCode(response);
-        if (errorCode === "stale-turn") {
+        const errorInfo = await this.readErrorInfo(response);
+        if (errorInfo.code === "stale-turn") {
           return;
         }
-        throw new Error(`The booth backend rejected the turn with HTTP ${response.status}`);
+        throw new Error(errorInfo.message ?? `The booth backend rejected the turn with HTTP ${response.status}`);
       }
 
       const payload = validateTurnResponse(await response.json());
@@ -253,22 +253,23 @@ export class ConversationCoordinator {
     });
   }
 
-  private async readErrorCode(response: Response): Promise<string | null> {
+  private async readErrorInfo(response: Response): Promise<{ code: string | null; message: string | null }> {
     try {
       const payload: unknown = await response.json();
       if (typeof payload === "object" && payload !== null) {
         const error = (payload as Record<string, unknown>).error;
         if (typeof error === "object" && error !== null) {
-          const code = (error as Record<string, unknown>).code;
-          if (typeof code === "string") {
-            return code;
-          }
+          const record = error as Record<string, unknown>;
+          return {
+            code: typeof record.code === "string" ? record.code : null,
+            message: typeof record.message === "string" ? record.message : null
+          };
         }
       }
     } catch {
       // not JSON; fall through to the generic message
     }
-    return null;
+    return { code: null, message: null };
   }
 }
 

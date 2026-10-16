@@ -3,7 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { SpeechSynthesisConfig } from "../../core/ApplicationConfiguration";
 import type { ApplicationLogger } from "../../core/ApplicationLogger";
 import type { SpeechDeliveryOptions } from "../../core/PluginManager";
@@ -58,11 +58,21 @@ export class NeuralSpeechSynthesisPlugin {
     if (voiceModelPath.trim() === "") {
       throw new Error("Piper engine needs a non-empty speechSynthesis.piper.voiceModelPath");
     }
+    // Missing files degrade instead of failing startup: the booth keeps
+    // running (subtitles only) with a clear pointer to the setup command.
     if (!(await this.fileExists(executablePath))) {
-      throw new Error(`Piper executable was not found at "${executablePath}"`);
+      this.logger.warn(
+        `Piper executable was not found at "${executablePath}"; run \`npm run setup\` to download the local speech ` +
+          "services. The booth will show subtitles without audio until then."
+      );
+      return;
     }
     if (!(await this.fileExists(voiceModelPath))) {
-      throw new Error(`Piper voice model was not found at "${voiceModelPath}"`);
+      this.logger.warn(
+        `Piper voice model was not found at "${voiceModelPath}"; run \`npm run setup\` to download the local speech ` +
+          "services. The booth will show subtitles without audio until then."
+      );
+      return;
     }
     this.logger.info("Piper speech engine verified", { executablePath, voiceModelPath });
   }
@@ -160,12 +170,24 @@ export class NeuralSpeechSynthesisPlugin {
 
   private async synthesizePiper(text: string, combined: AbortSignal): Promise<Uint8Array> {
     const tempPath = resolve(tmpdir(), `llm-o-lantern-${randomUUID()}.wav`);
-    const child = spawn(this.config.piper.executablePath, [
-      "--model",
-      this.config.piper.voiceModelPath,
-      "--output_file",
-      tempPath
-    ]);
+    // Absolute paths everywhere: spawn resolves a relative executable against
+    // its cwd option, and Piper resolves the voice path against its own cwd.
+    const executablePath = resolve(process.cwd(), this.config.piper.executablePath);
+    if (!(await this.fileExists(executablePath))) {
+      throw new Error(
+        `Piper is not installed at "${executablePath}"; run \`npm run setup\` to download the local speech services`
+      );
+    }
+    const piperDirectory = dirname(executablePath);
+    const voiceModelPath = resolve(process.cwd(), this.config.piper.voiceModelPath);
+    const args = ["--model", voiceModelPath, "--output_file", tempPath];
+    // Piper locates espeak-ng-data relative to its own directory; pass it
+    // explicitly so the voice files work no matter where the server is started.
+    const espeakDataPath = join(piperDirectory, "espeak-ng-data");
+    if (await this.fileExists(espeakDataPath)) {
+      args.push("--espeak_data", espeakDataPath);
+    }
+    const child = spawn(executablePath, args, { cwd: piperDirectory });
     this.liveChildren.add(child);
     const onAbort = (): void => {
       child.kill();

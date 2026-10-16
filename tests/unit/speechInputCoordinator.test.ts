@@ -259,6 +259,37 @@ describe("SpeechInputCoordinator", () => {
     expect(harness.conversation.submissions).toEqual([]);
   });
 
+  it("surfaces the backend's operator-facing error message for other failures", async () => {
+    const errors: string[] = [];
+    const harness = createHarness({
+      responses: [
+        jsonResponse(
+          {
+            error: {
+              code: "transcription-failed",
+              message: "Speech recognizer is unreachable at http://127.0.0.1:8082. Is the local Whisper server running?"
+            }
+          },
+          502
+        )
+      ],
+      useInjectedFetch: true,
+      onError: (message) => {
+        errors.push(message);
+      }
+    });
+
+    await harness.speechInput.startPushToTalk();
+    harness.microphone.setCapturedSampleCount(harness.microphone.microphone.getCapturedSampleCount() + 2000);
+    await harness.speechInput.stopPushToTalk();
+    await flushMicrotasks();
+
+    expect(errors).toEqual([
+      "Speech recognizer is unreachable at http://127.0.0.1:8082. Is the local Whisper server running?"
+    ]);
+    expect(harness.conversation.submissions).toEqual([]);
+  });
+
   it("ignores utterances shorter than the minimum length", async () => {
     const harness = createHarness({
       responses: [],

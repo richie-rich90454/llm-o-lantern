@@ -183,8 +183,9 @@ Status: implemented.
 |---|---|---|
 | OpenRouter (https://openrouter.ai/api/v1) | Shipped dialogue provider | Scripted fallback (`dialogueFallback: true`); the booth keeps working |
 | Ollama (localhost:11434) | Local dialogue when `dialogue.ollama` is selected | Scripted fallback (if enabled) or a failed turn |
-| Kokoro-FastAPI (localhost:8880) or Piper | Audio + lip-sync | Subtitles only (`degraded: true`) |
-| whisper.cpp server (localhost:8082) | Speech input | Manual text submission via the HTTP API only |
+| Piper (`services/piper`, installed by `npm run setup`) | Speech output + lip-sync | Subtitles only (`degraded: true`) with a setup hint in the log |
+| whisper.cpp (`services/whisper`, auto-started by the backend) | Speech input | Booth runs without voice input; logs name `npm run setup` |
+| Kokoro-FastAPI (localhost:8880) | Alternative speech synthesis engine | n/a unless selected |
 | Microphone + browser permission | Voice capture | Visual-only booth; push-to-talk also unusable |
 | WebGL2-capable browser | The 3D character | The frontend does not start |
 

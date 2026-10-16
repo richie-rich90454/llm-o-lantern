@@ -15,6 +15,7 @@ import { OpenFaceFxLipSyncPlugin } from "../plugins/lip-sync/OpenFaceFxLipSyncPl
 import { SessionMemoryPlugin } from "../plugins/memory/SessionMemoryPlugin";
 import { ConversationRoutes } from "./ConversationRoutes";
 import { createHttpServer } from "./server";
+import { LocalSpeechServiceSupervisor } from "./LocalSpeechServiceSupervisor";
 
 export type ApplicationRuntime = {
   configuration: ApplicationConfiguration;
@@ -80,6 +81,7 @@ export class ApplicationCompositionRoot {
       speechTimingProcessor
     });
     const httpServer = createHttpServer(routes, configuration, logger);
+    const speechServiceSupervisor = new LocalSpeechServiceSupervisor(configuration, logger);
 
     const purgeTimer = setInterval(() => {
       const purged = sessionManager.purgeIdleSessions();
@@ -94,11 +96,13 @@ export class ApplicationCompositionRoot {
       logger,
       pluginManager,
       start: async () => {
+        await speechServiceSupervisor.start();
         await listen(httpServer, configuration.value.server.host, configuration.value.server.port);
       },
       stop: async () => {
         clearInterval(purgeTimer);
         await closeServer(httpServer);
+        await speechServiceSupervisor.stop();
         await pluginManager.shutdown();
       }
     };
@@ -123,7 +127,11 @@ function serverPluginSelection(selection: PluginSelection): PluginSelection {
 function listen(server: Server, host: string, port: number): Promise<void> {
   return new Promise((resolve, reject) => {
     server.once("error", (error) => {
-      reject(new Error(`Failed to start the HTTP server: ${error.message}`));
+      const portInUse = (error as NodeJS.ErrnoException).code === "EADDRINUSE";
+      const message = portInUse
+        ? `Port ${port} is already in use. Is another llm-o-lantern instance already running?`
+        : `Failed to start the HTTP server: ${error.message}`;
+      reject(new Error(message));
     });
     server.listen(port, host, () => {
       resolve();
