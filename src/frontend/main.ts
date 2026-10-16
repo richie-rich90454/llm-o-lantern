@@ -134,6 +134,7 @@ async function bootstrap(): Promise<void> {
         apiBaseUrl: "",
         options: { prerollMs: payload.booth.voiceActivity.prerollMs },
         onError: (message) => booth.showError(message),
+        onPartialTranscript: (text) => booth.showSubtitle("visitor", text),
     });
 
     booth = new BoothInterfaceController({

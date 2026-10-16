@@ -211,9 +211,21 @@ export class ConversationCoordinator {
                         this.dependencies.onSpokenText?.(subtitleText);
                         if (event.audioWavBase64 !== null) {
                             await audioPlayback.enqueue(decodeBase64(event.audioWavBase64));
-                            tracks[event.index] = event.track
+                            const track = event.track
                                 ? FacialAnimationTrack.fromJson(event.track)
                                 : null;
+                            tracks[event.index] = track;
+                            // The very first chunk prepares its track before
+                            // playback starts; later chunks swap tracks on
+                            // their own onChunkStarted so the mouth always
+                            // follows the chunk that is actually audible.
+                            if (audioChunks === 0) {
+                                if (track !== null) {
+                                    facialAnimation.prepare(track);
+                                } else {
+                                    facialAnimation.clear();
+                                }
+                            }
                             audioChunks += 1;
                             audioSeconds += event.durationSeconds ?? 0;
                             if (!playbackStarted) {

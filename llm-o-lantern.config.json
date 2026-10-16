@@ -73,7 +73,7 @@
     "speechRecognition": {
         "engine": "whisper-cpp",
         "timeoutMs": 15000,
-        "language": null,
+        "language": "en",
         "whisperCpp": {
             "baseUrl": "http://127.0.0.1:8082",
             "executablePath": "services/whisper/whisper-server.exe",

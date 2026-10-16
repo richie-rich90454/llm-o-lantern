@@ -310,12 +310,14 @@ describe("ConversationCoordinator", () => {
         // First chunk started playing with its track while the stream continued.
         expect(harness.playbackStats.enqueuedBytes).toHaveLength(2);
         expect(harness.playbackStats.chunkStarts).toEqual([0]);
-        expect(harness.facialStats.preparedTracks).toHaveLength(1);
+        // The first chunk prepares immediately (belt) and again when its
+        // playback starts; later chunks swap tracks on their start.
+        expect(harness.facialStats.preparedTracks).toHaveLength(2);
         expect(spoken).toEqual(["Boo to you!", "Boo to you! Then more of me."]);
 
         harness.fireChunkEnded();
         expect(harness.playbackStats.chunkStarts).toEqual([0, 1]);
-        expect(harness.facialStats.preparedTracks).toHaveLength(2);
+        expect(harness.facialStats.preparedTracks).toHaveLength(3);
         harness.fireChunkEnded();
 
         await submission;

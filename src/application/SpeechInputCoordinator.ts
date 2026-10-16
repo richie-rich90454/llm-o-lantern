@@ -13,12 +13,16 @@ type SpeechInputCoordinatorDependencies = {
     logger: ApplicationLogger;
     apiBaseUrl: string;
     fetchImpl?: typeof fetch;
-    options: { prerollMs: number };
+    options: { prerollMs: number; partialIntervalMs?: number };
     onError?: (message: string) => void;
+    /** Receives live partial transcripts while the visitor is still talking. */
+    onPartialTranscript?: (text: string) => void;
 };
 
 const STT_SAMPLE_RATE = 16000;
 const MIN_UTTERANCE_SECONDS = 0.25;
+const MIN_PARTIAL_SECONDS = 0.7;
+const DEFAULT_PARTIAL_INTERVAL_MS = 900;
 // While the character is audible, a visitor must clearly out-shout the
 // speaker for a barge-in; this keeps residual echo from self-interrupting.
 const BARGE_IN_THRESHOLD_SCALE = 1.6;
@@ -41,6 +45,9 @@ export class SpeechInputCoordinator {
     private pushToTalkActive = false;
     private utteranceStartSample = -1;
     private transcribeAbort: AbortController | null = null;
+    private partialTimer: ReturnType<typeof setInterval> | null = null;
+    private partialAbort: AbortController | null = null;
+    private partialInFlight = false;
 
     constructor(dependencies: SpeechInputCoordinatorDependencies) {
         this.dependencies = dependencies;
@@ -69,6 +76,7 @@ export class SpeechInputCoordinator {
             return;
         }
         this.autoListening = false;
+        this.stopPartialLoop();
         this.utteranceStartSample = -1;
         if (!this.pushToTalkActive) {
             this.dependencies.microphone.stop();
@@ -108,6 +116,7 @@ export class SpeechInputCoordinator {
     }
 
     dispose(): void {
+        this.stopPartialLoop();
         this.disableAutoListening();
         this.dependencies.microphone.setFrameListener(null);
     }
@@ -132,14 +141,86 @@ export class SpeechInputCoordinator {
                 0,
                 this.dependencies.microphone.getCapturedSampleCount() - this.prerollSamples(),
             );
+            this.startPartialLoop();
             return;
         }
         if (event === "speech-end") {
+            this.stopPartialLoop();
             const start = this.utteranceStartSample >= 0 ? this.utteranceStartSample : 0;
             this.utteranceStartSample = -1;
             const microphone = this.dependencies.microphone;
             const samples = microphone.getSamplesRange(start, microphone.getCapturedSampleCount());
             void this.transcribeAndSubmit(samples);
+        }
+    }
+
+    /**
+     * While the visitor speaks, a rolling partial transcript keeps the
+     * visitor subtitle alive; it never submits a turn. The final transcript
+     * on speech end replaces it.
+     */
+    private startPartialLoop(): void {
+        if (this.dependencies.onPartialTranscript === undefined) {
+            return;
+        }
+        this.stopPartialLoop();
+        const intervalMs =
+            this.dependencies.options.partialIntervalMs ?? DEFAULT_PARTIAL_INTERVAL_MS;
+        this.partialTimer = setInterval(() => {
+            void this.transcribePartial();
+        }, intervalMs);
+    }
+
+    private stopPartialLoop(): void {
+        if (this.partialTimer !== null) {
+            clearInterval(this.partialTimer);
+            this.partialTimer = null;
+        }
+        this.partialAbort?.abort();
+        this.partialAbort = null;
+    }
+
+    private async transcribePartial(): Promise<void> {
+        const { microphone } = this.dependencies;
+        if (this.partialInFlight || this.utteranceStartSample < 0 || !this.autoListening) {
+            return;
+        }
+        const samples = microphone.getSamplesRange(
+            this.utteranceStartSample,
+            microphone.getCapturedSampleCount(),
+        );
+        if (samples.length / microphone.getSampleRate() < MIN_PARTIAL_SECONDS) {
+            return;
+        }
+        this.partialInFlight = true;
+        const abort = new AbortController();
+        this.partialAbort = abort;
+        try {
+            const wavBytes = encodeSamplesForStt(samples, microphone.getSampleRate());
+            const response = await this.fetchImpl(
+                `${this.dependencies.apiBaseUrl}/api/speech/transcribe`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "audio/wav" },
+                    body: new Uint8Array(wavBytes),
+                    signal: abort.signal,
+                },
+            );
+            if (!response.ok) {
+                return;
+            }
+            const payload: unknown = await response.json();
+            const text = readTranscriptionText(payload);
+            if (text !== null && text.trim() !== "") {
+                this.dependencies.onPartialTranscript?.(text);
+            }
+        } catch {
+            // Partials are best-effort live feedback; failures stay silent.
+        } finally {
+            this.partialInFlight = false;
+            if (this.partialAbort === abort) {
+                this.partialAbort = null;
+            }
         }
     }
 
@@ -157,8 +238,7 @@ export class SpeechInputCoordinator {
         this.transcribeAbort = abort;
 
         try {
-            const resampled = resampleLinear(samples, microphone.getSampleRate(), STT_SAMPLE_RATE);
-            const wavBytes = encodeWavMono(resampled, STT_SAMPLE_RATE);
+            const wavBytes = encodeSamplesForStt(samples, microphone.getSampleRate());
             const response = await this.fetchImpl(
                 `${this.dependencies.apiBaseUrl}/api/speech/transcribe`,
                 {
@@ -236,4 +316,9 @@ function readTranscriptionText(payload: unknown): string | null {
     }
     const text = (payload as Record<string, unknown>).text;
     return typeof text === "string" ? text : null;
+}
+
+function encodeSamplesForStt(samples: Float32Array, sampleRate: number): Uint8Array {
+    const resampled = resampleLinear(samples, sampleRate, STT_SAMPLE_RATE);
+    return encodeWavMono(resampled, STT_SAMPLE_RATE);
 }

@@ -2,8 +2,10 @@ import * as THREE from "three";
 import type { CharacterState, FacialState } from "../data/CharacterState";
 
 const TAU = Math.PI * 2;
-const FACE = { x: 0, y: -0.15, z: 0.95 };
-const MOUTH = { x: 0, y: -0.34, z: 0.85 };
+// Anchors sit just proud of the carved surface (radius ~1.0 at the face,
+// patch ~1.0) so particles are visible instead of buried in the body.
+const FACE = { x: 0, y: -0.15, z: 1.1 };
+const MOUTH = { x: 0, y: -0.32, z: 1.06 };
 const DUST_Y_FLOOR = -1.0;
 const OPACITY_RATE = 3.4;
 const SHOCKWAVE_SECONDS = 0.7;
@@ -31,28 +33,10 @@ void main() {
 }`;
 
 /**
- * Fresnel rim glow: a slightly larger shell around the pumpkin that catches
- * light only at the silhouette, giving the character an aura that breathes.
+ * Fresnel rim glow is intentionally NOT used: an enclosing shell around the
+ * pumpkin read as a strange bubble in practice. Presence comes from the
+ * particles, the face lights, and the palette instead.
  */
-const AURA_VERTEX_SHADER = `
-varying vec3 vNormal;
-varying vec3 vView;
-void main() {
-    vNormal = normalize(normalMatrix * normal);
-    vec4 mv = modelViewMatrix * vec4(position, 1.0);
-    vView = normalize(-mv.xyz);
-    gl_Position = projectionMatrix * mv;
-}`;
-
-const AURA_FRAGMENT_SHADER = `
-uniform vec3 uColor;
-uniform float uIntensity;
-varying vec3 vNormal;
-varying vec3 vView;
-void main() {
-    float fresnel = pow(1.0 - abs(dot(normalize(vNormal), normalize(vView))), 2.4);
-    gl_FragColor = vec4(uColor, fresnel * uIntensity);
-}`;
 
 type SoftSystem = {
     points: THREE.Points;
@@ -134,7 +118,7 @@ function makeTrail(source: SoftSystem, scale: number): SoftSystem {
     return trail;
 }
 
-type AccentKind = "none" | "fountain" | "pulse" | "halo" | "smoke";
+type AccentKind = "none" | "fountain" | "pulse" | "smoke";
 
 /**
  * The pumpkin's stage magic, choreographed for elegance: a breathing fresnel
@@ -147,8 +131,6 @@ type AccentKind = "none" | "fountain" | "pulse" | "halo" | "smoke";
  */
 export class CharacterEffectsController {
     private readonly root = new THREE.Group();
-    private readonly aura: THREE.Mesh;
-    private readonly auraMaterial: THREE.ShaderMaterial;
     private readonly motes: SoftSystem;
     private readonly intake: SoftSystem;
     private readonly intakeTrail: SoftSystem;
@@ -198,7 +180,6 @@ export class CharacterEffectsController {
 
     private state: CharacterState = "IDLE";
     private burstAge = Number.POSITIVE_INFINITY;
-    private auraIntensity = 0.12;
     private accentKind: AccentKind = "none";
     private accentAge = Number.POSITIVE_INFINITY;
     private elapsed = 0;
@@ -215,21 +196,6 @@ export class CharacterEffectsController {
         this.dust = makeSystem(46, [0.035, 0.07], 61);
         this.burst = makeSystem(80, [0.14, 0.34], 77);
         this.fountain = makeSystem(48, [0.12, 0.28], 89);
-
-        const auraGeometry = new THREE.SphereGeometry(1.17, 48, 32);
-        auraGeometry.scale(1, 0.8, 1);
-        this.auraMaterial = new THREE.ShaderMaterial({
-            vertexShader: AURA_VERTEX_SHADER,
-            fragmentShader: AURA_FRAGMENT_SHADER,
-            uniforms: {
-                uColor: { value: this.paletteColor.clone() },
-                uIntensity: { value: 0.12 },
-            },
-            transparent: true,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-        });
-        this.aura = new THREE.Mesh(auraGeometry, this.auraMaterial);
 
         const ringGeometry = new THREE.RingGeometry(0.52, 0.6, 72);
         this.ringMaterials = [
@@ -258,7 +224,6 @@ export class CharacterEffectsController {
         this.ringFar.visible = false;
 
         this.root.add(
-            this.aura,
             this.motes.points,
             this.dust.points,
             this.intake.points,
@@ -376,7 +341,7 @@ export class CharacterEffectsController {
                 this.accentAge = 0;
                 break;
             case "dramatic":
-                this.accentKind = "halo";
+                this.accentKind = "pulse";
                 this.accentAge = 0;
                 if (this.burstAge > 1) {
                     this.burstAge = 0;
@@ -408,29 +373,6 @@ export class CharacterEffectsController {
 
         // One palette glides between state colors; every system samples it.
         this.paletteColor.lerp(this.palettes[this.state], Math.min(1, dt * 1.6));
-
-        const breathing = 0.5 + 0.5 * Math.sin(this.elapsed * 0.9);
-        let auraTarget = 0.1 + breathing * 0.05;
-        if (listening) {
-            auraTarget = 0.26 + breathing * 0.08;
-        } else if (speaking) {
-            auraTarget = 0.3 + mouthActivity * 0.25;
-        } else if (thinking) {
-            auraTarget = 0.2 + 0.06 * Math.sin(this.elapsed * 2.4);
-        } else if (this.state === "INTERRUPTED") {
-            auraTarget = 0.65;
-        } else if (this.state === "RECOVERING") {
-            auraTarget = 0.08;
-        }
-        if (this.accentKind === "halo") {
-            auraTarget += 0.5 * Math.max(0, 1 - this.accentAge / 1.6);
-        }
-        if (this.accentKind === "smoke") {
-            auraTarget *= 0.55 + 0.2 * Math.sin(this.elapsed * 14);
-        }
-        this.auraIntensity += (auraTarget - this.auraIntensity) * Math.min(1, dt * 4.5);
-        this.auraMaterial.uniforms.uIntensity.value = this.auraIntensity;
-        (this.auraMaterial.uniforms.uColor.value as THREE.Color).copy(this.paletteColor);
 
         this.motes.targetOpacity = 0.6;
         this.intake.targetOpacity = listening ? 0.95 : 0;
@@ -476,8 +418,6 @@ export class CharacterEffectsController {
             system.points.geometry.dispose();
             system.material.dispose();
         }
-        this.aura.geometry.dispose();
-        this.auraMaterial.dispose();
         this.ringNear.geometry.dispose();
         for (const material of this.ringMaterials) {
             material.dispose();

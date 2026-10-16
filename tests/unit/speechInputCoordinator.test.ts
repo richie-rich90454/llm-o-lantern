@@ -126,6 +126,8 @@ type HarnessOptions = {
     responses: Array<Response | (() => Promise<Response>)>;
     useInjectedFetch: boolean;
     onError?: (message: string) => void;
+    onPartialTranscript?: (text: string) => void;
+    partialIntervalMs?: number;
 };
 
 type Harness = {
@@ -166,8 +168,9 @@ function createHarness(options: HarnessOptions): Harness {
         logger,
         apiBaseUrl: API_BASE,
         fetchImpl: options.useInjectedFetch ? fetchImpl : undefined,
-        options: { prerollMs: PREROLL_MS },
+        options: { prerollMs: PREROLL_MS, partialIntervalMs: options.partialIntervalMs },
         onError: options.onError,
+        onPartialTranscript: options.onPartialTranscript,
     });
 
     return { speechInput, character, characterEvents, microphone, conversation, calls };
@@ -326,6 +329,39 @@ describe("SpeechInputCoordinator", () => {
 
         expect(harness.calls).toHaveLength(0);
         expect(harness.conversation.submissions).toEqual([]);
+    });
+
+    it("streams partial transcripts while the visitor speaks and lets the final replace them", async () => {
+        const partials: string[] = [];
+        const harness = createHarness({
+            responses: [
+                jsonResponse({ text: "partial hello", confidence: null }),
+                jsonResponse({ text: "hello full sentence", confidence: null }),
+            ],
+            useInjectedFetch: true,
+            partialIntervalMs: 50,
+            onPartialTranscript: (text) => partials.push(text),
+        });
+        harness.microphone.setCapturedSampleCount(1000);
+        await harness.speechInput.enableAutoListening();
+
+        for (let index = 0; index < 10; index += 1) {
+            harness.microphone.deliverFrame(loudFrame());
+        }
+        harness.microphone.setCapturedSampleCount(6000);
+        await new Promise<void>((resolve) => {
+            setTimeout(resolve, 80);
+        });
+
+        expect(partials).toEqual(["partial hello"]);
+        expect(harness.conversation.submissions).toEqual([]);
+
+        for (let index = 0; index < 25; index += 1) {
+            harness.microphone.deliverFrame(quietFrame());
+        }
+        await flushMicrotasks();
+
+        expect(harness.conversation.submissions).toEqual(["hello full sentence"]);
     });
 
     it("does not self-interrupt on moderate echo while the character speaks", async () => {

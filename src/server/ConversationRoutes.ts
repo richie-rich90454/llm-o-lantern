@@ -777,8 +777,9 @@ export class ConversationRoutes {
                 let outcome = await attemptStream();
                 if (outcome === "retry") {
                     // Transient provider errors (502s, resets) are common with
-                    // free endpoints; one fresh attempt before giving up.
+                    // free endpoints; give the provider a breath, then retry.
                     this.logger.info("Dialogue stream failed; retrying once");
+                    await new Promise((resolveDelay) => setTimeout(resolveDelay, 400));
                     deadlineFired = false;
                     firstSentenceReceived = false;
                     outcome = await attemptStream();
