@@ -689,104 +689,126 @@ export class ConversationRoutes {
                 await emitChunk(secret.text);
             } else if (typeof dialogue.streamResponseText === "function") {
                 const dialogueStart = Date.now();
+                const streamResponseText = dialogue.streamResponseText.bind(dialogue);
                 let fullRaw = "";
                 // If a reasoning-heavy model thinks for too long without any
                 // speakable text, the booth must not sit in silence: abort the
                 // upstream stream and answer with the scripted line instead.
-                const firstChunkDeadlineMs = 3500;
-                const firstChunkAbort = new AbortController();
-                const streamSignal = AbortSignal.any([combined, firstChunkAbort.signal]);
-                const deadlineTimer = setTimeout(() => {
-                    if (chunkIndex === 0) {
-                        this.logger.warn(
-                            "Dialogue stream produced no speakable text in time; switching to the scripted fallback",
-                        );
-                        firstChunkAbort.abort();
-                    }
-                }, firstChunkDeadlineMs);
-                try {
-                    const dialogueRequest = new DialogueRequest({
-                        sessionId,
-                        turnId,
-                        text,
-                        history: this.sessionManager.getHistory(sessionId),
-                        instructions: personality.buildInstructions(),
-                        allowedEmotions: personality.getAllowedEmotions(),
-                        allowedDeliveries: personality.getAllowedDeliveries(),
-                        maxResponseCharacters: maxCharacters,
-                    });
-                    const streamer = new SpokenTextStreamer({ maxCharacters });
-                    const capturing = captureDeltas(
-                        dialogue.streamResponseText(dialogueRequest, streamSignal),
-                        (delta) => {
-                            fullRaw += delta;
-                        },
-                    );
-                    let firstSentenceReceived = false;
-                    for await (const sentence of streamer.streamSentences(capturing)) {
-                        if (!firstSentenceReceived) {
-                            firstSentenceReceived = true;
-                            clearTimeout(deadlineTimer);
+                const firstChunkDeadlineMs = 4500;
+                let deadlineFired = false;
+                let firstSentenceReceived = false;
+
+                const attemptStream = async (): Promise<
+                    "ok" | "retry" | "fallback" | "deadline" | "aborted"
+                > => {
+                    const firstChunkAbort = new AbortController();
+                    const streamSignal = AbortSignal.any([combined, firstChunkAbort.signal]);
+                    const deadlineTimer = setTimeout(() => {
+                        if (chunkIndex === 0 && !firstSentenceReceived) {
+                            deadlineFired = true;
+                            firstChunkAbort.abort();
                         }
-                        if (looksLikeInternalReasoning(sentence)) {
-                            if (chunkIndex === 0) {
-                                throw new Error(
-                                    "Dialogue response contained internal reasoning, not a spoken reply",
-                                );
-                            }
-                            this.logger.warn(
-                                "Stopped a stream that drifted into internal reasoning",
-                                { turnId },
-                            );
-                            break;
-                        }
-                        await emitChunk(sentence);
-                    }
-                } catch (error) {
-                    if (abortController.signal.aborted) {
-                        response.end();
-                        return;
-                    }
-                    if (combined.aborted) {
-                        writeEvent({
-                            type: "error",
-                            code: "dialogue-timeout",
-                            message: "The dialogue provider did not answer in time",
+                    }, firstChunkDeadlineMs);
+                    try {
+                        const dialogueRequest = new DialogueRequest({
+                            sessionId,
+                            turnId,
+                            text,
+                            history: this.sessionManager.getHistory(sessionId),
+                            instructions: personality.buildInstructions(),
+                            allowedEmotions: personality.getAllowedEmotions(),
+                            allowedDeliveries: personality.getAllowedDeliveries(),
+                            maxResponseCharacters: maxCharacters,
                         });
-                        response.end();
-                        return;
-                    }
-                    const message = error instanceof Error ? error.message : String(error);
-                    if (chunkIndex > 0) {
-                        // We already spoke something; finish gracefully.
-                        this.logger.warn(
-                            "Dialogue stream failed mid-reply; keeping what was spoken",
-                            {
-                                error: message,
+                        const streamer = new SpokenTextStreamer({ maxCharacters });
+                        const capturing = captureDeltas(
+                            streamResponseText(dialogueRequest, streamSignal),
+                            (delta) => {
+                                fullRaw += delta;
                             },
                         );
-                    } else {
-                        this.logger.warn("Dialogue stream failed; scripted fallback used", {
-                            error: message,
-                        });
-                        const fallbackWorked = await runScriptedFallback();
-                        if (!fallbackWorked) {
-                            writeEvent({
-                                type: "error",
-                                code: "dialogue-unavailable",
-                                message: `Dialogue provider failed: ${message}`,
-                            });
-                            response.end();
-                            return;
+                        for await (const sentence of streamer.streamSentences(capturing)) {
+                            if (!firstSentenceReceived) {
+                                firstSentenceReceived = true;
+                                clearTimeout(deadlineTimer);
+                            }
+                            if (looksLikeInternalReasoning(sentence)) {
+                                if (chunkIndex === 0) {
+                                    return "fallback";
+                                }
+                                this.logger.warn(
+                                    "Stopped a stream that drifted into internal reasoning",
+                                    { turnId },
+                                );
+                                return "ok";
+                            }
+                            await emitChunk(sentence);
                         }
+                        return "ok";
+                    } catch (error) {
+                        if (abortController.signal.aborted) {
+                            return "aborted";
+                        }
+                        if (combined.aborted) {
+                            throw error;
+                        }
+                        if (deadlineFired) {
+                            return "deadline";
+                        }
+                        const message = error instanceof Error ? error.message : String(error);
+                        if (chunkIndex > 0) {
+                            this.logger.warn(
+                                "Dialogue stream failed mid-reply; keeping what was spoken",
+                                { error: message },
+                            );
+                            return "ok";
+                        }
+                        const providerFailure =
+                            message.includes("HTTP") ||
+                            message.includes("unreachable") ||
+                            message.includes("stream ended unexpectedly") ||
+                            message.includes("fetch failed");
+                        return providerFailure ? "retry" : "fallback";
+                    } finally {
+                        clearTimeout(deadlineTimer);
                     }
-                } finally {
-                    clearTimeout(deadlineTimer);
-                    latency.dialogueMs = Date.now() - dialogueStart;
+                };
+
+                let outcome = await attemptStream();
+                if (outcome === "retry") {
+                    // Transient provider errors (502s, resets) are common with
+                    // free endpoints; one fresh attempt before giving up.
+                    this.logger.info("Dialogue stream failed; retrying once");
+                    deadlineFired = false;
+                    firstSentenceReceived = false;
+                    outcome = await attemptStream();
+                }
+                latency.dialogueMs = Date.now() - dialogueStart;
+                if (outcome === "aborted") {
+                    response.end();
+                    return;
+                }
+                const streamedCleanly = outcome === "ok";
+                if (!streamedCleanly && chunkIndex === 0) {
+                    this.logger.info(
+                        "Dialogue stream produced no clean reply; answering with the scripted line",
+                    );
+                    const fallbackWorked = await runScriptedFallback();
+                    if (!fallbackWorked) {
+                        writeEvent({
+                            type: "error",
+                            code: "dialogue-unavailable",
+                            message:
+                                "The dialogue provider produced no reply and no scripted fallback is available",
+                        });
+                        response.end();
+                        return;
+                    }
                 }
 
-                if (chunkIndex === 0 && fullRaw.trim() !== "") {
-                    // Nothing speakable arrived; try the classic pipeline once.
+                if (streamedCleanly && chunkIndex === 0 && fullRaw.trim() !== "") {
+                    // Nothing speakable streamed out; try the classic pipeline
+                    // once on the complete body before falling back.
                     try {
                         const processed = this.responseProcessor.process(
                             new DialogueResponse(fullRaw, "neutral", "normal", providerDialogue),
@@ -805,7 +827,7 @@ export class ConversationRoutes {
                         await runScriptedFallback();
                     }
                 }
-                if (chunkIndex > 0 && fullRaw.trim() !== "") {
+                if (streamedCleanly && chunkIndex > 0 && fullRaw.trim() !== "") {
                     try {
                         const processed = this.responseProcessor.process(
                             new DialogueResponse(fullRaw, "neutral", "normal", providerDialogue),

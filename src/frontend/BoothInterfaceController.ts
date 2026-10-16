@@ -28,6 +28,7 @@ type DiagnosticsSnapshot = {
     timingSource: string;
     totalMs: string;
     soundToLipsMs: string;
+    firstChunkMs: string;
     dialogueMs: string;
     synthesisMs: string;
     timingMs: string;
@@ -44,6 +45,7 @@ function emptyDiagnostics(backend: string): DiagnosticsSnapshot {
         timingSource: "-",
         totalMs: "-",
         soundToLipsMs: "-",
+        firstChunkMs: "-",
         dialogueMs: "-",
         synthesisMs: "-",
         timingMs: "-",
@@ -99,8 +101,6 @@ export class BoothInterfaceController {
         this.diagnosticsList = this.requireElement("diagnostics-list");
 
         this.requireElement("character-name").textContent = config.characterName;
-        this.requireElement("provider-badge").textContent =
-            `${config.providerLabels.dialogue} · ${config.providerLabels.speechSynthesis}`;
         this.subtitles.hidden = !config.booth.subtitlesEnabled;
 
         this.requireElement("start-button").addEventListener("click", () => {
@@ -216,6 +216,7 @@ export class BoothInterfaceController {
             timingSource: diagnostics.timingSource,
             totalMs: `${diagnostics.latency.totalMs} ms`,
             soundToLipsMs: `${diagnostics.latency.endOfUtteranceToFirstAudibleMs} ms`,
+            firstChunkMs: diagnostics.firstChunkMs >= 0 ? `${diagnostics.firstChunkMs} ms` : "-",
             dialogueMs: `${diagnostics.latency.dialogueMs} ms`,
             synthesisMs: `${diagnostics.latency.synthesisMs} ms`,
             timingMs: `${diagnostics.latency.timingMs} ms`,
@@ -391,6 +392,7 @@ export class BoothInterfaceController {
             ["Timing source", snapshot.timingSource],
             ["Reply total", snapshot.totalMs],
             ["Sound to lips", snapshot.soundToLipsMs],
+            ["First sentence", snapshot.firstChunkMs],
             ["Dialogue", snapshot.dialogueMs],
             ["Synthesis", snapshot.synthesisMs],
             ["Timing", snapshot.timingMs],

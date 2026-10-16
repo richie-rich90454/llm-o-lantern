@@ -204,7 +204,7 @@ OpenRouter-specific provider errors are surfaced with their HTTP status and body
 
 - Start overlay: one click unlocks browser audio and the microphone. In auto-listen mode this is also the microphone permission moment.
 - State badge: the live character state - IDLE, LISTENING, THINKING, PREPARING_SPEECH, SPEAKING, INTERRUPTED, RECOVERING.
-- Subtitles: both sides of the conversation, so the booth works even when the room is too loud to hear it; reply words fly in as the pumpkin says them. Replies stream sentence by sentence, so speech begins as soon as the first sentence is ready; if a provider is slow to produce anything speakable, the scripted line answers within about three seconds instead of leaving silence.
+- Subtitles: both sides of the conversation, so the booth works even when the room is too loud to hear it; reply words fly in as the pumpkin says them. Replies stream sentence by sentence, so speech begins as soon as the first sentence is ready; if a provider is slow to produce anything speakable, the scripted line answers within about four seconds instead of leaving silence.
 - Error banner: service and backend problems, auto-hiding after 8 seconds; the last 10 errors stay listed in the diagnostics panel.
 
 | Control       | Key        | Action                                             |

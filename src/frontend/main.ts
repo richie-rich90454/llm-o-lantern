@@ -111,6 +111,7 @@ async function bootstrap(): Promise<void> {
         onSpokenText: (text) => booth.showSubtitle("character", text),
         onTurnCompleted: (diagnostics) => {
             expression.applyEmotion(diagnostics.emotion);
+            effects.playEmotionAccent(diagnostics.emotion);
             booth.showTurnDiagnostics(diagnostics);
         },
         onError: (message) => booth.showError(message),

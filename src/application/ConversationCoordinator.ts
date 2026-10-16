@@ -31,6 +31,7 @@ export type TurnDiagnostics = {
     audioDurationSeconds: number;
     degraded: boolean;
     dialogueFallback: boolean;
+    firstChunkMs: number;
 };
 
 type ConversationCoordinatorDependencies = {
@@ -300,6 +301,7 @@ export class ConversationCoordinator {
             audioDurationSeconds: audioSeconds,
             degraded: doneEvent?.degraded ?? false,
             dialogueFallback: doneEvent?.dialogueFallback ?? false,
+            firstChunkMs: doneEvent?.latency.firstChunkMs ?? -1,
         });
     }
 

@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { spawnSync } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -204,6 +205,15 @@ async function isDirectory(path: string): Promise<boolean> {
 
 const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
 if (entryUrl !== "" && import.meta.url === entryUrl) {
+    // Windows consoles default to a legacy code page; switch to UTF-8 so
+    // dashes, ellipses, and middle dots in log messages render correctly.
+    if (process.platform === "win32") {
+        try {
+            spawnSync("cmd", ["/c", "chcp", "65001"], { stdio: "ignore" });
+        } catch {
+            // best effort only; logs remain readable either way
+        }
+    }
     const application = new Application();
     application.start().catch(async (error) => {
         console.error(error instanceof Error ? error.message : error);

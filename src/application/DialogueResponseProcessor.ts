@@ -99,7 +99,13 @@ const INTERNAL_REASONING_PATTERNS = [
 ];
 
 export function looksLikeInternalReasoning(text: string): boolean {
-    return INTERNAL_REASONING_PATTERNS.some((pattern) => pattern.test(text));
+    if (INTERNAL_REASONING_PATTERNS.some((pattern) => pattern.test(text))) {
+        return true;
+    }
+    // Defense in depth: text salvaged from a truncated JSON envelope may
+    // still carry the reasoning right after the wrecked {"text":" prefix.
+    const probe = text.replace(/^\s*\{\s*"text"\s*:\s*"?/, "");
+    return probe !== text && INTERNAL_REASONING_PATTERNS.some((pattern) => pattern.test(probe));
 }
 
 export class DialogueResponseProcessor {

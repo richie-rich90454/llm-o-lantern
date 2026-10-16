@@ -191,6 +191,35 @@ class FakeStreamingDialoguePlugin {
     }
 }
 
+/** Fails the first stream attempt with a provider-style error, then works. */
+class FakeFlakyStreamingDialoguePlugin {
+    readonly id = "dialogue.flaky";
+    readonly version = "1.0.0";
+    readonly category = "dialogue";
+    streamCalls = 0;
+
+    constructor(private readonly jsonText: string) {}
+
+    async initialize(): Promise<void> {}
+
+    async shutdown(): Promise<void> {}
+
+    async generateResponse(): Promise<DialogueResponse> {
+        return new DialogueResponse(this.jsonText, "neutral", "normal", this.id);
+    }
+
+    async *streamResponseText(): AsyncGenerator<string> {
+        this.streamCalls += 1;
+        if (this.streamCalls === 1) {
+            throw new Error('Remote provider "Fake" responded with HTTP 502: transient');
+        }
+        const pieceSize = 6;
+        for (let index = 0; index < this.jsonText.length; index += pieceSize) {
+            yield this.jsonText.slice(index, index + pieceSize);
+        }
+    }
+}
+
 type StreamLine = { type: string } & Record<string, unknown>;
 
 async function readNdjson(response: Response): Promise<StreamLine[]> {
@@ -422,6 +451,74 @@ describe("ApplicationCompositionRoot", () => {
 });
 
 describe("streamed turns (/api/conversation/turn-stream)", () => {
+    it("retries once when the provider fails before producing text, then streams for real", async () => {
+        const flaky = new FakeFlakyStreamingDialoguePlugin(
+            JSON.stringify({
+                text: "Second attempt speaks clearly.",
+                emotion: "amused",
+                delivery: "normal",
+            }),
+        );
+        const { logger } = createCapturingLogger();
+        const configuration = await ApplicationConfiguration.load({ environment: {} });
+        const registry = new PluginRegistry();
+        registry.add("dialogue.flaky", () => flaky);
+        registry.add("personality.fake", () => new FakePersonalityPlugin());
+        registry.add("speech-synthesis.fake", () => new FakeSpeechSynthesisPlugin());
+        registry.add("lipsync.fake", () => new FakeLipSyncPlugin());
+        const selection: PluginSelection = {
+            dialogue: "dialogue.flaky",
+            personality: "personality.fake",
+            speechRecognition: null,
+            speechSynthesis: "speech-synthesis.fake",
+            lipSync: "lipsync.fake",
+            memory: null,
+            character: null,
+            microphone: null,
+            audioPlayback: null,
+            additional: [],
+        };
+        const pluginManager = new PluginManager(selection, logger);
+        await pluginManager.loadFromRegistry(registry);
+        const routes = new ConversationRoutes({
+            configuration,
+            logger,
+            pluginManager,
+            sessionManager: new ConversationSessionManager(
+                null,
+                configuration.value.conversation,
+                logger,
+            ),
+            responseProcessor: new DialogueResponseProcessor(configuration, logger),
+            speechTimingProcessor: new SpeechTimingProcessor(logger),
+        });
+        const server = createHttpServer(routes, configuration, logger);
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as AddressInfo).port;
+        try {
+            const response = await fetch(`http://127.0.0.1:${port}/api/conversation/turn-stream`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sessionId: "flaky-test-1ab",
+                    turnId: 1,
+                    text: "hello",
+                }),
+            });
+            const lines = await readNdjson(response);
+            const chunks = lines.filter((line) => line.type === "chunk");
+            const done = lines.find((line) => line.type === "done");
+
+            expect(flaky.streamCalls).toBe(2);
+            expect(chunks.some((chunk) => String(chunk.text).includes("Second attempt"))).toBe(
+                true,
+            );
+            expect(done?.dialogueFallback).toBe(false);
+        } finally {
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+    });
+
     it("streams sentence chunks with audio and tracks, then a done event", async () => {
         const streamingBooth = await startTestBooth({
             streamingText: JSON.stringify({
