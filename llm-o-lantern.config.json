@@ -53,6 +53,7 @@
             "timeoutMs": 30000,
             "maxTokens": 1500,
             "temperature": 0.8,
+            "reasoningEffort": "low",
             "structuredOutput": true
         }
     },

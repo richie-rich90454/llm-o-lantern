@@ -239,6 +239,11 @@ export class OpencodeGoDialoguePlugin {
             temperature: this.config.temperature,
             max_tokens: this.config.maxTokens,
         };
+        if (this.config.reasoningEffort !== "") {
+            // The opencode CLI sends this too; it keeps the model from
+            // over-thinking before its first token.
+            payload.reasoning_effort = this.config.reasoningEffort;
+        }
         if (structured) {
             payload.response_format = { type: "json_object" };
         }

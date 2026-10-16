@@ -55,6 +55,7 @@ function makeConfig(overrides: Partial<OpencodeGoConfig> = {}): OpencodeGoConfig
         timeoutMs: 5000,
         maxTokens: 800,
         temperature: 0.8,
+        reasoningEffort: "low",
         structuredOutput: true,
         ...overrides,
     };
@@ -123,8 +124,10 @@ describe("OpencodeGoDialoguePlugin", () => {
         const body = JSON.parse(String(calls[0].init?.body)) as {
             model: string;
             response_format: { type: string };
+            reasoning_effort: string;
         };
         expect(body.model).toBe("deepseek-v4.1-flash");
+        expect(body.reasoning_effort).toBe("low");
         expect(body.response_format).toEqual({ type: "json_object" });
         expect(response.text).toContain("Candy first.");
         expect(response.providerId).toBe("dialogue.opencode-go");

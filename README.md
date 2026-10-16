@@ -151,6 +151,7 @@ Frequently changed settings:
 | `server.host` / `server.port` | `127.0.0.1` / `8787` | API bind address |
 | `plugins.*` | see file | Plugin selection per category |
 | `dialogue.opencodeGo.model` | `deepseek-v4.1-flash` | OpenCode Go model |
+| `dialogue.opencodeGo.reasoningEffort` | `low` | Sent as `reasoning_effort`; keeps first-token latency low |
 | `dialogue.opencodeGo.apiKeyEnv` / `authFilePath` / `databasePath` | `OPENCODE_API_KEY` / `~/.local/share/opencode/auth.json` / `~/.local/share/opencode/opencode.db` | Where the credentials come from (env key, then CLI login, then auth file) |
 | `dialogue.remote.preset` | `openrouter` in the shipped file | Provider preset; overridable with `LLMOL_DIALOGUE_PRESET` |
 | `dialogue.remote.model` | `null` (preset default) | Model id; set `LLMOL_DIALOGUE_MODEL` in `.env` to choose freely |

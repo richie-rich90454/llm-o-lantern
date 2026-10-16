@@ -154,8 +154,11 @@ export class ConversationRoutes {
         this.sessionManager = dependencies.sessionManager;
         this.responseProcessor = dependencies.responseProcessor;
         this.speechTimingProcessor = dependencies.speechTimingProcessor;
-        this.noDataMs = dependencies.streamTiming?.noDataMs ?? 4000;
-        this.patienceMs = dependencies.streamTiming?.patienceMs ?? 12000;
+        // Reasoning gateways can stay silent for several seconds before the
+        // first token (measured 4-5.4s on OpenCode Go), so the pre-first-token
+        // windows are generous; the dead-connection guard still fires at 8s.
+        this.noDataMs = dependencies.streamTiming?.noDataMs ?? 8000;
+        this.patienceMs = dependencies.streamTiming?.patienceMs ?? 20000;
     }
 
     async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {

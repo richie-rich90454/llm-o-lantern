@@ -63,6 +63,8 @@ export type OpencodeGoConfig = {
     timeoutMs: number;
     maxTokens: number;
     temperature: number;
+    /** Sent as reasoning_effort; "low" keeps replies snappy like the CLI. */
+    reasoningEffort: string;
     structuredOutput: boolean;
 };
 
@@ -718,6 +720,13 @@ function readConfig(root: RawRecord, problems: string[]): AppConfig {
                     0.8,
                     0,
                     2,
+                ),
+                reasoningEffort: readString(
+                    opencodeGo,
+                    "reasoningEffort",
+                    "dialogue.opencodeGo.reasoningEffort",
+                    problems,
+                    "low",
                 ),
                 structuredOutput: readBoolean(
                     opencodeGo,
