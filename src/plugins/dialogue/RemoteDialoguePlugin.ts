@@ -143,7 +143,7 @@ type AnthropicMessagesResponse = {
 
 const MAX_BODY_EXCERPT = 200;
 
-function bodyExcerpt(text: string): string {
+export function bodyExcerpt(text: string): string {
     const trimmed = text.trim();
     return trimmed.length <= MAX_BODY_EXCERPT
         ? trimmed
@@ -189,7 +189,7 @@ function extractMessageText(message: OpenAiChatMessage): string | null {
     return null;
 }
 
-function salvageJsonReplyFromReasoning(reasoning: string): string | null {
+export function salvageJsonReplyFromReasoning(reasoning: string): string | null {
     const first = reasoning.indexOf("{");
     const last = reasoning.lastIndexOf("}");
     if (first === -1 || last <= first) {
@@ -224,7 +224,7 @@ function describeMessageShape(message: OpenAiChatMessage): string {
     });
 }
 
-function joinContentParts(content: unknown): string | null {
+export function joinContentParts(content: unknown): string | null {
     if (typeof content === "string") {
         return content;
     }
@@ -251,7 +251,7 @@ function joinContentParts(content: unknown): string | null {
  * spoken, but the empty yield tells the caller the stream is alive, so a
  * thinking model is not mistaken for a dead connection.
  */
-function parseSseLine(line: string): string | "done" | null {
+export function parseSseLine(line: string): string | "done" | null {
     if (!line.startsWith("data:")) {
         return null;
     }

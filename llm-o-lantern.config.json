@@ -4,7 +4,7 @@
         "port": 8787
     },
     "plugins": {
-        "dialogue": "dialogue.remote",
+        "dialogue": "dialogue.opencode-go",
         "personality": "personality.haunted-pumpkin",
         "speechRecognition": "speech-recognition.local",
         "speechSynthesis": "speech-synthesis.neural",
@@ -40,9 +40,19 @@
             "fallbackEnabled": true
         },
         "failover": {
-            "chain": [],
+            "chain": ["dialogue.remote"],
             "instances": [],
             "rateLimitCooldownMs": 900000
+        },
+        "opencodeGo": {
+            "baseUrl": "https://opencode.ai/inference/go/v1",
+            "model": "deepseek-v4.1-flash",
+            "apiKeyEnv": "OPENCODE_API_KEY",
+            "authFilePath": "~/.local/share/opencode/auth.json",
+            "timeoutMs": 30000,
+            "maxTokens": 1500,
+            "temperature": 0.8,
+            "structuredOutput": true
         }
     },
     "personality": {

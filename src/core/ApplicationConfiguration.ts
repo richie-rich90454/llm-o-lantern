@@ -52,6 +52,18 @@ export type RemoteInstanceConfig = {
     baseUrl: string | null;
 };
 
+export type OpencodeGoConfig = {
+    baseUrl: string;
+    model: string;
+    apiKeyEnv: string;
+    /** Where `opencode auth login` stores the OpenCode Go key. */
+    authFilePath: string;
+    timeoutMs: number;
+    maxTokens: number;
+    temperature: number;
+    structuredOutput: boolean;
+};
+
 export type DialogueFailoverConfig = {
     /**
      * Dialogue plugin ids (e.g. "dialogue.remote.groq", "dialogue.ollama",
@@ -134,6 +146,7 @@ export type AppConfig = {
         remote: DialogueRemoteConfig;
         scripted: DialogueScriptedConfig;
         failover: DialogueFailoverConfig;
+        opencodeGo: OpencodeGoConfig;
     };
     personality: PersonalityConfig;
     speechSynthesis: SpeechSynthesisConfig;
@@ -474,6 +487,7 @@ function readConfig(root: RawRecord, problems: string[]): AppConfig {
     const remote = asRecord(dialogue.remote, problems, "dialogue.remote");
     const scripted = asRecord(dialogue.scripted, problems, "dialogue.scripted");
     const failover = asRecord(dialogue.failover, problems, "dialogue.failover");
+    const opencodeGo = asRecord(dialogue.opencodeGo, problems, "dialogue.opencodeGo");
     const personality = asRecord(root.personality, problems, "personality");
     const speechSynthesis = asRecord(root.speechSynthesis, problems, "speechSynthesis");
     const kokoro = asRecord(speechSynthesis.kokoro, problems, "speechSynthesis.kokoro");
@@ -638,6 +652,70 @@ function readConfig(root: RawRecord, problems: string[]): AppConfig {
                     900000,
                     10000,
                     86400000,
+                ),
+            },
+            opencodeGo: {
+                baseUrl: readString(
+                    opencodeGo,
+                    "baseUrl",
+                    "dialogue.opencodeGo.baseUrl",
+                    problems,
+                    "https://opencode.ai/inference/go/v1",
+                ),
+                model: readString(
+                    opencodeGo,
+                    "model",
+                    "dialogue.opencodeGo.model",
+                    problems,
+                    "deepseek-v4.1-flash",
+                ),
+                apiKeyEnv: readString(
+                    opencodeGo,
+                    "apiKeyEnv",
+                    "dialogue.opencodeGo.apiKeyEnv",
+                    problems,
+                    "OPENCODE_API_KEY",
+                ),
+                authFilePath: readString(
+                    opencodeGo,
+                    "authFilePath",
+                    "dialogue.opencodeGo.authFilePath",
+                    problems,
+                    "~/.local/share/opencode/auth.json",
+                ),
+                timeoutMs: readNumber(
+                    opencodeGo,
+                    "timeoutMs",
+                    "dialogue.opencodeGo.timeoutMs",
+                    problems,
+                    30000,
+                    1000,
+                    120000,
+                ),
+                maxTokens: readNumber(
+                    opencodeGo,
+                    "maxTokens",
+                    "dialogue.opencodeGo.maxTokens",
+                    problems,
+                    1500,
+                    16,
+                    4096,
+                ),
+                temperature: readNumber(
+                    opencodeGo,
+                    "temperature",
+                    "dialogue.opencodeGo.temperature",
+                    problems,
+                    0.8,
+                    0,
+                    2,
+                ),
+                structuredOutput: readBoolean(
+                    opencodeGo,
+                    "structuredOutput",
+                    "dialogue.opencodeGo.structuredOutput",
+                    problems,
+                    true,
                 ),
             },
         },

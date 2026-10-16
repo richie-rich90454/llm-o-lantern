@@ -78,7 +78,8 @@ Status: implemented.
 
 | Integration point | Needed for | Without it |
 | --- | --- | --- |
-| OpenRouter (https://openrouter.ai/api/v1) | Shipped dialogue provider | Scripted fallback (`dialogueFallback: true`); the booth keeps working |
+| OpenCode Go (https://opencode.ai/inference/go/v1) | Shipped dialogue provider (key via `opencode auth login` or `OPENCODE_API_KEY`; requires workspace Privacy "Global" for `deepseek-v4.1-flash`) | Failover chain advances to OpenRouter, then scripted fallback (`dialogueFallback: true`); the booth keeps working |
+| OpenRouter (https://openrouter.ai/api/v1) | Configured failover dialogue provider | Scripted fallback (`dialogueFallback: true`); the booth keeps working |
 | Ollama (localhost:11434) | Local dialogue when `dialogue.ollama` is selected | Scripted fallback (if enabled) or a failed turn |
 | Piper (`services/piper`, installed by `pnpm run setup`) | Speech output + lip-sync | Subtitles only (`degraded: true`) with a setup hint in the log |
 | whisper.cpp (`services/whisper`, auto-started by the backend) | Speech input | Booth runs without voice input; logs name `pnpm run setup` |

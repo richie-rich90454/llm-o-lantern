@@ -2,7 +2,7 @@
 
 A modular, local-first, conversational 3D jack-o'-lantern for a Halloween booth. It listens through a microphone, answers with an LLM that streams sentence by sentence (so it starts speaking while it is still thinking), speaks with a neural voice, and drives a live 3D pumpkin face from the speech audio — with soul-motes flowing into its face when it listens and embers puffing from its mouth when it speaks.
 
-Out of the box the dialogue provider is **OpenRouter** using the free `nvidia/nemotron-3.5-super-vl:free` model (paste your key into `.env`). Without a key the booth still runs and answers with the scripted fallback dialogue. Every provider is replaceable: local Ollama, a self-hosted llama.cpp server, any of the other remote presets, local Kokoro/Piper voices, and local Whisper speech recognition all plug into the same boundaries.
+Out of the box the dialogue provider is **OpenCode Go** when a key is available (from `opencode auth login` or `OPENCODE_API_KEY`), with **OpenRouter** as the configured failover provider and the scripted mode as the final safety net. Without any key the booth still runs and answers with the scripted fallback dialogue. Every provider is replaceable: local Ollama, a self-hosted llama.cpp server, any of the other remote presets, local Kokoro/Piper voices, and local Whisper speech recognition all plug into the same boundaries.
 
 See DESCRIPTION.md for the product description, DESIGN.md for the architecture, PLAN.md for the delivery record, and PROJECT-RULES.md for the engineering rules.
 
@@ -58,7 +58,8 @@ The speech services are self-contained: `pnpm run setup` downloads them into `./
 | --- | --- | --- | --- |
 | llm-o-lantern API | `http://127.0.0.1:8787` | API + static frontend (`pnpm start`) | you |
 | Vite dev server | `http://localhost:5173` | Development UI, proxies `/api` | `pnpm run dev` |
-| OpenRouter | `https://openrouter.ai/api/v1` | Dialogue (shipped default provider) | cloud |
+| OpenCode Go | `https://opencode.ai/inference/go/v1` | Dialogue (shipped default provider) | cloud |
+| OpenRouter | `https://openrouter.ai/api/v1` | Dialogue (configured failover provider) | cloud |
 | whisper.cpp | `http://127.0.0.1:8082` | Speech recognition (default engine) | auto-started by the backend |
 | Piper | `services/piper/piper.exe` | Speech synthesis (default engine) | spawned per reply |
 | Ollama | `http://127.0.0.1:11434` | Dialogue (optional local provider) | you |
@@ -79,7 +80,16 @@ The installer downloads:
 
 `llm-o-lantern.config.json` already points at these paths; the backend starts whisper before the HTTP listener and stops it on shutdown. If the services are missing, startup logs a warning with the setup command and the booth runs with subtitles only. To use a different Piper voice, download the `.onnx` and `.onnx.json` files into `services/piper/voices/` and update `speechSynthesis.piper.voiceModelPath`.
 
-### OpenRouter (dialogue, shipped default)
+### OpenCode Go (dialogue, shipped default)
+
+OpenCode Go is the OpenCode subscription gateway (`https://opencode.ai/inference/go/v1`, OpenAI-compatible). If you signed in with `opencode auth login`, the booth picks up your key automatically from `~/.local/share/opencode/auth.json`; otherwise set `OPENCODE_API_KEY` in `.env`. The default model is `deepseek-v4.1-flash`.
+
+Two gateway specifics are handled by the plugin:
+
+- Every request carries the **mandatory `x-opencode-session` header** (the gateway rejects requests without it, and uses it to route and cache the conversation). The booth sends your visitor session id, so each visitor conversation gets its own cache-affinity lane.
+- Gateway rejections are surfaced verbatim. In particular, `deepseek-v4.1-flash` requires your opencode.ai workspace **Privacy setting to be "Global"** (Workspace → Privacy); other models on the gateway require an active Go subscription seat for them individually. Change the setting, then restart the booth so its cooldown resets.
+
+### OpenRouter (dialogue, configured failover)
 
 Create a key at `https://openrouter.ai/settings/keys`, put it in `.env`:
 
@@ -87,7 +97,7 @@ Create a key at `https://openrouter.ai/settings/keys`, put it in `.env`:
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-The shipped default model is `nvidia/nemotron-3.5-super-vl:free` (free), called through the OpenAI-compatible Chat Completions API (`POST https://openrouter.ai/api/v1/chat/completions`). The model is not hardcoded: `.env` decides it, so switching models never requires touching code or the JSON configuration file.
+This provider is the configured failover: once OpenCode Go is cooling down or failing, OpenRouter answers. Its model is not hardcoded either - `.env` decides it (`LLMOL_DIALOGUE_MODEL`), so switching models never requires touching code or the JSON configuration file.
 
 ```bash
 # .env — any OpenRouter model id works, including ":free" variants
@@ -139,6 +149,8 @@ Frequently changed settings:
 | --- | --- | --- |
 | `server.host` / `server.port` | `127.0.0.1` / `8787` | API bind address |
 | `plugins.*` | see file | Plugin selection per category |
+| `dialogue.opencodeGo.model` | `deepseek-v4.1-flash` | OpenCode Go model |
+| `dialogue.opencodeGo.apiKeyEnv` / `authFilePath` | `OPENCODE_API_KEY` / `~/.local/share/opencode/auth.json` | Where the key comes from |
 | `dialogue.remote.preset` | `openrouter` in the shipped file | Provider preset; overridable with `LLMOL_DIALOGUE_PRESET` |
 | `dialogue.remote.model` | `null` (preset default) | Model id; set `LLMOL_DIALOGUE_MODEL` in `.env` to choose freely |
 | `dialogue.remote.acknowledgeRemoteProcessing` | `true` in the shipped file | Required consent for cloud dialogue |
@@ -165,7 +177,7 @@ Environment variables (always win over the JSON file): `LLMOL_HOST`, `LLMOL_PORT
 
 ### Remote dialogue providers
 
-OpenRouter is the shipped default (see above). To switch the remote provider, change the preset and provide the matching key in the backend environment:
+OpenRouter is the configured failover provider (see above) and can also be selected directly as primary. To switch the remote provider, change the preset and provide the matching key in the backend environment:
 
 ```jsonc
 "plugins": { "dialogue": "dialogue.remote" },
@@ -252,7 +264,9 @@ Reset between visitors: it clears the session memory server-side and stops any a
 | "Microphone permission was denied" | Browser permission refused | Allow the microphone for the page and reload |
 | "Speech recognition is offline." | whisper.cpp is not running (auto-start disabled, files missing, or it failed to start) | Run `pnpm run setup`, check the startup log lines tagged `whisper:`, and `http://127.0.0.1:8787/api/health` |
 | "Speech recognizer is unreachable at http://127.0.0.1:8082" | Same as above | Same fix; the whisper server starts with `pnpm start` unless `whisperCpp.autoStart` is false |
-| Replies are scripted and Fallback shows "active" | No usable dialogue provider (missing or invalid `OPENROUTER_API_KEY`, no OpenRouter credits, rate limited, or a local LLM is down) | Read the terminal warning; put a valid key in `.env` and restart, or select a local provider |
+| Replies are scripted and Fallback shows "active" | Every provider failed or is cooling down (missing key, quota, subscription, or a local LLM is down) | Read the terminal warning naming the reason; for OpenCode Go check your workspace Privacy setting (Global) and `opencode auth login`; for OpenRouter free tiers see the quota notes above |
+| OpenCode Go says "requires Global regions" | Your opencode.ai workspace Privacy setting is regional | Workspace → Privacy → Global on https://opencode.ai, then restart the booth (its cooldown resets) |
+| OpenCode Go says "An active OpenCode Go subscription is required" | That gateway model is not part of your seat | Use `deepseek-v4.1-flash` (the included model) or upgrade the subscription |
 | Replies time out (`dialogue-timeout`) | Free model very slow or provider unreachable | Raise `dialogue.remote.timeoutMs`; check `/api/health`; for Ollama run `ollama serve` and `ollama pull llama3.2` |
 | No audio, subtitles only | Piper files missing | Run `pnpm run setup` (installs `services/piper/`), or switch `speechSynthesis.engine` and run a Kokoro server instead |
 | Port 8787 already in use at startup | Another llm-o-lantern instance is running | Stop it, or change `server.port`; the message names the port |

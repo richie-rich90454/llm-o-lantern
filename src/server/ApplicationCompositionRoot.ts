@@ -11,6 +11,7 @@ import { DialogueResponseProcessor } from "../application/DialogueResponseProces
 import { SpeechTimingProcessor } from "../animation/SpeechTimingProcessor";
 import { OllamaDialoguePlugin } from "../plugins/dialogue/OllamaDialoguePlugin";
 import { RemoteDialoguePlugin } from "../plugins/dialogue/RemoteDialoguePlugin";
+import { OpencodeGoDialoguePlugin } from "../plugins/dialogue/OpencodeGoDialoguePlugin";
 import { ScriptedDialoguePlugin } from "../plugins/dialogue/ScriptedDialoguePlugin";
 import { HauntedPumpkinPersonalityPlugin } from "../plugins/personality/HauntedPumpkinPersonalityPlugin";
 import { LocalSpeechRecognitionPlugin } from "../plugins/speech-recognition/LocalSpeechRecognitionPlugin";
@@ -49,6 +50,11 @@ export class ApplicationCompositionRoot {
         registry.add(
             "dialogue.remote",
             (logger) => new RemoteDialoguePlugin(values.dialogue.remote, logger, environment),
+        );
+        registry.add(
+            "dialogue.opencode-go",
+            (logger) =>
+                new OpencodeGoDialoguePlugin(values.dialogue.opencodeGo, logger, environment),
         );
         registry.add("dialogue.scripted", (logger) => new ScriptedDialoguePlugin(logger));
         // Extra remote provider instances (for example a Groq free-tier key

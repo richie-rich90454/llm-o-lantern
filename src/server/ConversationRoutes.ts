@@ -145,6 +145,7 @@ export class ConversationRoutes {
     private readonly recentErrors: RecentError[] = [];
     private healthCache: { timestamp: number; payload: unknown } | null = null;
     private primaryCooldownUntil = 0;
+    private readonly pluginCooldownUntil = new Map<string, number>();
 
     constructor(dependencies: ConversationRoutesDependencies) {
         this.configuration = dependencies.configuration;
@@ -280,20 +281,25 @@ export class ConversationRoutes {
     }
 
     private isQuotaError(message: string): boolean {
-        return /\b429\b|\b402\b|rate limit|insufficient credits|free-models-per-day/i.test(message);
+        return /\b429\b|\b402\b|\b401\b|rate limit|insufficient credits|free-models-per-day|subscription is required|requires Global regions|invalid api key|unauthorized/i.test(
+            message,
+        );
+    }
+
+    private cooldownFor(message: string): number {
+        const perDay = /per-day|free-models-per-day/i.test(message);
+        return perDay
+            ? msUntilNextUtcMidnight() + 60000
+            : this.configuration.value.dialogue.failover.rateLimitCooldownMs;
     }
 
     /**
      * Skips a quota-limited provider so the booth never wastes attempts on it.
-     * Daily caps cool down until the next UTC midnight; other rate limits use
+     * Daily caps cool down until the next UTC midnight; other rejections use
      * the configured cooldown.
      */
     private enterPrimaryCooldown(message: string): void {
-        const perDay = /per-day|free-models-per-day/i.test(message);
-        const cooldownMs = perDay
-            ? msUntilNextUtcMidnight() + 60000
-            : this.configuration.value.dialogue.failover.rateLimitCooldownMs;
-        this.primaryCooldownUntil = Date.now() + cooldownMs;
+        this.primaryCooldownUntil = Date.now() + this.cooldownFor(message);
         this.logger.warn("Dialogue provider hit a quota limit; cooling down", {
             untilIso: new Date(this.primaryCooldownUntil).toISOString(),
             reason: message.slice(0, 200),
@@ -316,6 +322,9 @@ export class ConversationRoutes {
                 });
                 continue;
             }
+            if (Date.now() < (this.pluginCooldownUntil.get(id) ?? 0)) {
+                continue;
+            }
             try {
                 const request = new DialogueRequest({
                     sessionId: turn.sessionId,
@@ -331,10 +340,17 @@ export class ConversationRoutes {
                     .getPlugin<DialoguePluginShape>(id)
                     .generateResponse(request, combined);
             } catch (error) {
-                this.logger.warn("Failover provider failed", {
-                    id,
-                    error: error instanceof Error ? error.message : String(error),
-                });
+                const message = error instanceof Error ? error.message : String(error);
+                if (this.isQuotaError(message)) {
+                    const until = Date.now() + this.cooldownFor(message);
+                    this.pluginCooldownUntil.set(id, until);
+                    this.logger.warn("Failover provider cooling down", {
+                        id,
+                        untilIso: new Date(until).toISOString(),
+                    });
+                } else {
+                    this.logger.warn("Failover provider failed", { id, error: message });
+                }
             }
         }
         return null;
