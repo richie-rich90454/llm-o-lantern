@@ -82,12 +82,13 @@ The installer downloads:
 
 ### OpenCode Go (dialogue, shipped default)
 
-OpenCode Go is the OpenCode subscription gateway (`https://opencode.ai/inference/go/v1`, OpenAI-compatible). If you signed in with `opencode auth login`, the booth picks up your key automatically from `~/.local/share/opencode/auth.json`; otherwise set `OPENCODE_API_KEY` in `.env`. The default model is `deepseek-v4.1-flash`.
+OpenCode Go is the OpenCode subscription gateway (`https://opencode.ai/inference/go/v1`, OpenAI-compatible). No API key wrangling needed: if you use the opencode CLI, the booth reads the same login the CLI uses - the account token and active workspace from `~/.local/share/opencode/opencode.db` - and resolves it on every turn, so a token the CLI refreshes is picked up without a booth restart. Credentials are tried in order: `OPENCODE_API_KEY` from `.env`, then the CLI login, then the API key in `~/.local/share/opencode/auth.json`. The default model is `deepseek-v4.1-flash`.
 
-Two gateway specifics are handled by the plugin:
+Three gateway specifics are handled by the plugin:
 
 - Every request carries the **mandatory `x-opencode-session` header** (the gateway rejects requests without it, and uses it to route and cache the conversation). The booth sends your visitor session id, so each visitor conversation gets its own cache-affinity lane.
-- Gateway rejections are surfaced verbatim. In particular, `deepseek-v4.1-flash` requires your opencode.ai workspace **Privacy setting to be "Global"** (Workspace → Privacy); other models on the gateway require an active Go subscription seat for them individually. Change the setting, then restart the booth so its cooldown resets.
+- Requests made with the **CLI login** also carry `x-opencode-org-id` (the active workspace); the gateway requires workspace selection for account tokens and answers "Workspace selection is required" otherwise.
+- Gateway rejections are surfaced verbatim. In particular, a direct `OPENCODE_API_KEY` whose workspace **Privacy setting is not "Global"** (Workspace → Privacy) gets "This Go model requires Global regions" - the auto-fetched CLI login is unaffected. Other models on the gateway require an active Go subscription seat for them individually.
 
 ### OpenRouter (dialogue, configured failover)
 
@@ -150,7 +151,7 @@ Frequently changed settings:
 | `server.host` / `server.port` | `127.0.0.1` / `8787` | API bind address |
 | `plugins.*` | see file | Plugin selection per category |
 | `dialogue.opencodeGo.model` | `deepseek-v4.1-flash` | OpenCode Go model |
-| `dialogue.opencodeGo.apiKeyEnv` / `authFilePath` | `OPENCODE_API_KEY` / `~/.local/share/opencode/auth.json` | Where the key comes from |
+| `dialogue.opencodeGo.apiKeyEnv` / `authFilePath` / `databasePath` | `OPENCODE_API_KEY` / `~/.local/share/opencode/auth.json` / `~/.local/share/opencode/opencode.db` | Where the credentials come from (env key, then CLI login, then auth file) |
 | `dialogue.remote.preset` | `openrouter` in the shipped file | Provider preset; overridable with `LLMOL_DIALOGUE_PRESET` |
 | `dialogue.remote.model` | `null` (preset default) | Model id; set `LLMOL_DIALOGUE_MODEL` in `.env` to choose freely |
 | `dialogue.remote.acknowledgeRemoteProcessing` | `true` in the shipped file | Required consent for cloud dialogue |
@@ -265,7 +266,8 @@ Reset between visitors: it clears the session memory server-side and stops any a
 | "Speech recognition is offline." | whisper.cpp is not running (auto-start disabled, files missing, or it failed to start) | Run `pnpm run setup`, check the startup log lines tagged `whisper:`, and `http://127.0.0.1:8787/api/health` |
 | "Speech recognizer is unreachable at http://127.0.0.1:8082" | Same as above | Same fix; the whisper server starts with `pnpm start` unless `whisperCpp.autoStart` is false |
 | Replies are scripted and Fallback shows "active" | Every provider failed or is cooling down (missing key, quota, subscription, or a local LLM is down) | Read the terminal warning naming the reason; for OpenCode Go check your workspace Privacy setting (Global) and `opencode auth login`; for OpenRouter free tiers see the quota notes above |
-| OpenCode Go says "requires Global regions" | Your opencode.ai workspace Privacy setting is regional | Workspace → Privacy → Global on https://opencode.ai, then restart the booth (its cooldown resets) |
+| OpenCode Go says "requires Global regions" | You set `OPENCODE_API_KEY` and that workspace's Privacy region is not Global | Remove the key from `.env` to use the auto-fetched CLI login, or set Workspace → Privacy → Global at https://opencode.ai |
+| OpenCode Go says "Workspace selection is required" | The login token from `opencode.db` has no active workspace recorded | Run `opencode` once so it refreshes its state, then turn again |
 | OpenCode Go says "An active OpenCode Go subscription is required" | That gateway model is not part of your seat | Use `deepseek-v4.1-flash` (the included model) or upgrade the subscription |
 | Replies time out (`dialogue-timeout`) | Free model very slow or provider unreachable | Raise `dialogue.remote.timeoutMs`; check `/api/health`; for Ollama run `ollama serve` and `ollama pull llama3.2` |
 | No audio, subtitles only | Piper files missing | Run `pnpm run setup` (installs `services/piper/`), or switch `speechSynthesis.engine` and run a Kokoro server instead |

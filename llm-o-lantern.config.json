@@ -49,6 +49,7 @@
             "model": "deepseek-v4.1-flash",
             "apiKeyEnv": "OPENCODE_API_KEY",
             "authFilePath": "~/.local/share/opencode/auth.json",
+            "databasePath": "~/.local/share/opencode/opencode.db",
             "timeoutMs": 30000,
             "maxTokens": 1500,
             "temperature": 0.8,

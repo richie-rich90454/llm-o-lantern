@@ -56,6 +56,8 @@ export type OpencodeGoConfig = {
     baseUrl: string;
     model: string;
     apiKeyEnv: string;
+    /** The opencode CLI's SQLite state: holds the login token and active workspace. */
+    databasePath: string;
     /** Where `opencode auth login` stores the OpenCode Go key. */
     authFilePath: string;
     timeoutMs: number;
@@ -682,6 +684,13 @@ function readConfig(root: RawRecord, problems: string[]): AppConfig {
                     "dialogue.opencodeGo.authFilePath",
                     problems,
                     "~/.local/share/opencode/auth.json",
+                ),
+                databasePath: readString(
+                    opencodeGo,
+                    "databasePath",
+                    "dialogue.opencodeGo.databasePath",
+                    problems,
+                    "~/.local/share/opencode/opencode.db",
                 ),
                 timeoutMs: readNumber(
                     opencodeGo,

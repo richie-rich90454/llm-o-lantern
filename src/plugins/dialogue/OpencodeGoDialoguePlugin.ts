@@ -21,20 +21,31 @@ type PendingRetry = {
     payload: Record<string, unknown>;
 };
 
+type ResolvedCredentials = {
+    token: string;
+    /** The gateway requires workspace selection; login tokens come with one. */
+    orgId: string | null;
+    source: "environment" | "opencode-login" | "auth-file";
+};
+
 const CLIENT_HEADER_VALUE = "llm-o-lantern";
 const USER_AGENT = "llm-o-lantern/0.1.0";
 
 /**
  * The OpenCode Go gateway (https://opencode.ai/inference/go/v1) is an
- * OpenAI-compatible endpoint. Two details are specific to it:
+ * OpenAI-compatible endpoint. Its specifics:
  *
  * - Every request MUST carry an `x-opencode-session` header (and
  *   `x-opencode-session-id`); without it the gateway rejects the request with
  *   "MissingSessionID". The header also gives the gateway the affinity key it
  *   uses to route and cache the conversation, so the booth reuses one session
  *   id per visitor session.
- * - The API key comes from OPENCODE_API_KEY (or the key that
- *   `opencode auth login` stored in the OpenCode auth.json).
+ * - Requests authenticated with an OpenCode *login* token MUST also send
+ *   `x-opencode-org-id` (the active workspace); without it the gateway
+ *   answers "Workspace selection is required".
+ * - Credentials are resolved per turn, in order: OPENCODE_API_KEY, then the
+ *   login that `opencode` itself uses (account token and active workspace in
+ *   its SQLite state), then the API key in the OpenCode auth.json.
  */
 export class OpencodeGoDialoguePlugin {
     readonly id = "dialogue.opencode-go";
@@ -44,8 +55,6 @@ export class OpencodeGoDialoguePlugin {
     private readonly config: OpencodeGoConfig;
     private readonly logger: ApplicationLogger;
     private readonly environment: Record<string, string | undefined>;
-    private apiKey: string | null = null;
-    private resolved = false;
 
     constructor(
         config: OpencodeGoConfig,
@@ -58,30 +67,25 @@ export class OpencodeGoDialoguePlugin {
     }
 
     async initialize(): Promise<void> {
-        this.apiKey = await this.resolveApiKey();
-        this.resolved = true;
-        if (this.apiKey === null) {
+        const credentials = await this.resolveCredentials();
+        if (credentials === null) {
             this.logger.warn(
-                `OpenCode Go has no API key: set ${this.config.apiKeyEnv} in .env or sign in with ` +
-                    "`opencode auth login` (the booth keeps running and uses fallback providers)",
+                `OpenCode Go has no credentials: set ${this.config.apiKeyEnv} in .env or sign in ` +
+                    "with `opencode auth login` (the booth keeps running and uses fallback providers)",
             );
             return;
         }
         this.logger.info("OpenCode Go dialogue provider configured", {
             model: this.config.model,
             baseUrl: this.config.baseUrl,
-            apiKeyPresent: true,
+            credentialSource: credentials.source,
         });
     }
 
     async shutdown(): Promise<void> {}
 
     async isAvailable(): Promise<boolean> {
-        if (!this.resolved) {
-            this.apiKey = await this.resolveApiKey();
-            this.resolved = true;
-        }
-        return this.apiKey !== null;
+        return (await this.resolveCredentials()) !== null;
     }
 
     getDisplayName(): string {
@@ -92,17 +96,17 @@ export class OpencodeGoDialoguePlugin {
         request: DialogueRequest,
         signal: AbortSignal,
     ): Promise<DialogueResponse> {
-        const key = this.requireKey();
+        const credentials = await this.requireCredentials();
         const combined = AbortSignal.any([signal, AbortSignal.timeout(this.config.timeoutMs)]);
         const payload = this.buildPayload(request, false);
         const retry: PendingRetry = { payload };
 
-        let response = await this.postChat(key, payload, request, combined);
+        let response = await this.postChat(credentials, payload, request, combined);
         if (response.status === 400 && this.config.structuredOutput) {
             const errorBody = await response.text();
             if (errorBody.includes("response_format")) {
                 delete retry.payload.response_format;
-                response = await this.postChat(key, retry.payload, request, combined);
+                response = await this.postChat(credentials, retry.payload, request, combined);
             } else {
                 throw new Error(`OpenCode Go responded with HTTP 400: ${bodyExcerpt(errorBody)}`);
             }
@@ -138,7 +142,7 @@ export class OpencodeGoDialoguePlugin {
         request: DialogueRequest,
         signal: AbortSignal,
     ): AsyncGenerator<string> {
-        const key = this.requireKey();
+        const credentials = await this.requireCredentials();
         const combined = AbortSignal.any([signal, AbortSignal.timeout(this.config.timeoutMs)]);
         const controller = new AbortController();
         const onAbort = (): void => {
@@ -148,7 +152,7 @@ export class OpencodeGoDialoguePlugin {
 
         try {
             let response = await this.postChat(
-                key,
+                credentials,
                 this.buildPayload(request, true),
                 request,
                 controller.signal,
@@ -157,7 +161,7 @@ export class OpencodeGoDialoguePlugin {
                 const errorBody = await response.text();
                 if (errorBody.includes("response_format")) {
                     response = await this.postChat(
-                        key,
+                        credentials,
                         this.buildPayload(request, true, false),
                         request,
                         controller.signal,
@@ -242,7 +246,7 @@ export class OpencodeGoDialoguePlugin {
     }
 
     private postChat(
-        key: string,
+        credentials: ResolvedCredentials,
         payload: Record<string, unknown>,
         request: DialogueRequest,
         signal: AbortSignal,
@@ -253,11 +257,16 @@ export class OpencodeGoDialoguePlugin {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
-                        Authorization: `Bearer ${key}`,
+                        Authorization: `Bearer ${credentials.token}`,
                         // Required by the gateway for routing and cache affinity;
                         // requests without it fail with "MissingSessionID".
                         "x-opencode-session": request.sessionId,
                         "x-opencode-session-id": request.sessionId,
+                        // Login tokens are scoped to an account; the gateway needs
+                        // the active workspace to apply its privacy region.
+                        ...(credentials.orgId !== null
+                            ? { "x-opencode-org-id": credentials.orgId }
+                            : {}),
                         "x-opencode-client": CLIENT_HEADER_VALUE,
                         "User-Agent": USER_AGENT,
                     },
@@ -273,22 +282,77 @@ export class OpencodeGoDialoguePlugin {
         })();
     }
 
-    private requireKey(): string {
-        if (this.apiKey === null) {
+    private async requireCredentials(): Promise<ResolvedCredentials> {
+        const credentials = await this.resolveCredentials();
+        if (credentials === null) {
             throw new Error(
                 `OpenCode Go is not configured: set ${this.config.apiKeyEnv} in .env or run ` +
                     "`opencode auth login`",
             );
         }
-        return this.apiKey;
+        return credentials;
     }
 
-    /** Environment first, then the key that `opencode auth login` stored. */
-    private async resolveApiKey(): Promise<string | null> {
+    /**
+     * Resolved per turn so the booth picks up a login token refreshed by the
+     * opencode CLI without a restart. Order: explicit environment key, then
+     * the CLI's own login, then the API key in the OpenCode auth file.
+     */
+    private async resolveCredentials(): Promise<ResolvedCredentials | null> {
         const fromEnvironment = this.environment[this.config.apiKeyEnv];
         if (typeof fromEnvironment === "string" && fromEnvironment.trim() !== "") {
-            return fromEnvironment;
+            return { token: fromEnvironment, orgId: null, source: "environment" };
         }
+        const fromLogin = await this.resolveFromOpencodeLogin();
+        if (fromLogin !== null) {
+            return fromLogin;
+        }
+        return await this.resolveFromAuthFile();
+    }
+
+    /**
+     * The booth's preferred credential is the same login the opencode CLI
+     * uses: the account access token and active workspace stored in its
+     * SQLite state. This is what makes the gateway accept the request without
+     * any manual API key.
+     */
+    private async resolveFromOpencodeLogin(): Promise<ResolvedCredentials | null> {
+        const databasePath = expandHome(this.config.databasePath);
+        let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
+        try {
+            ({ DatabaseSync } = await import("node:sqlite"));
+        } catch {
+            return null;
+        }
+        let database: InstanceType<typeof DatabaseSync> | null = null;
+        try {
+            database = new DatabaseSync(databasePath, { readOnly: true });
+            const row = database
+                .prepare(
+                    "SELECT a.access_token AS token, s.active_org_id AS orgId " +
+                        "FROM account_state s " +
+                        "JOIN account a ON a.id = s.active_account_id LIMIT 1",
+                )
+                .get() as { token?: unknown; orgId?: unknown } | undefined;
+            if (
+                row !== undefined &&
+                typeof row.token === "string" &&
+                row.token.trim() !== "" &&
+                typeof row.orgId === "string" &&
+                row.orgId.trim() !== ""
+            ) {
+                this.logger.debug("Using the OpenCode login stored by the CLI", { databasePath });
+                return { token: row.token, orgId: row.orgId, source: "opencode-login" };
+            }
+            return null;
+        } catch {
+            return null;
+        } finally {
+            database?.close();
+        }
+    }
+
+    private async resolveFromAuthFile(): Promise<ResolvedCredentials | null> {
         const authPath = expandHome(this.config.authFilePath);
         try {
             const raw = await readFile(authPath, "utf8");
@@ -305,7 +369,7 @@ export class OpencodeGoDialoguePlugin {
                 this.logger.debug("Using the OpenCode Go key stored by opencode auth login", {
                     authFilePath: authPath,
                 });
-                return key;
+                return { token: key, orgId: null, source: "auth-file" };
             }
             return null;
         } catch {

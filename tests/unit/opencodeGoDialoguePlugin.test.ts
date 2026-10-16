@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { OpencodeGoConfig } from "../../src/core/ApplicationConfiguration";
 import { OpencodeGoDialoguePlugin } from "../../src/plugins/dialogue/OpencodeGoDialoguePlugin";
 import { DialogueRequest } from "../../src/data/DialogueRequest";
@@ -49,6 +50,7 @@ function makeConfig(overrides: Partial<OpencodeGoConfig> = {}): OpencodeGoConfig
         baseUrl: "https://opencode.ai/inference/go/v1",
         model: "deepseek-v4.1-flash",
         apiKeyEnv: "OPENCODE_API_KEY",
+        databasePath: "C:/does/not/exist/opencode.db",
         authFilePath: "~/.local/share/opencode/auth.json",
         timeoutMs: 5000,
         maxTokens: 800,
@@ -116,6 +118,7 @@ describe("OpencodeGoDialoguePlugin", () => {
         expect(headers["x-opencode-session"]).toBe(request.sessionId);
         expect(headers["x-opencode-session-id"]).toBe(request.sessionId);
         expect(headers["x-opencode-client"]).toBe("llm-o-lantern");
+        expect(headers["x-opencode-org-id"]).toBeUndefined();
         expect(String(headers["User-Agent"])).toContain("llm-o-lantern");
         const body = JSON.parse(String(calls[0].init?.body)) as {
             model: string;
@@ -176,6 +179,44 @@ describe("OpencodeGoDialoguePlugin", () => {
         await plugin.generateResponse(makeRequest(), new AbortController().signal);
         const headers = (calls[0].init?.headers ?? {}) as Record<string, string>;
         expect(headers.Authorization).toBe("Bearer key-from-auth-file");
+    });
+
+    it("uses the opencode login token and active workspace from its SQLite state", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "llmo-go-db-"));
+        tempDirs.push(dir);
+        const databasePath = join(dir, "opencode.db");
+        const database = new DatabaseSync(databasePath);
+        database.exec("CREATE TABLE account (id TEXT PRIMARY KEY, access_token TEXT)");
+        database.exec(
+            "CREATE TABLE account_state (id INTEGER PRIMARY KEY, active_account_id TEXT, active_org_id TEXT)",
+        );
+        database
+            .prepare("INSERT INTO account (id, access_token) VALUES (?, ?)")
+            .run("acc_1", "st_login-token");
+        database
+            .prepare(
+                "INSERT INTO account_state (id, active_account_id, active_org_id) VALUES (1, ?, ?)",
+            )
+            .run("acc_1", "wrk_workspace1");
+        database.close();
+
+        const calls = queueFetch([
+            new Response(JSON.stringify({ choices: [{ message: { content: "boo" } }] }), {
+                status: 200,
+            }),
+        ]);
+        const plugin = new OpencodeGoDialoguePlugin(
+            makeConfig({ databasePath }),
+            createCapturingLogger().logger,
+            {},
+        );
+        await plugin.initialize();
+
+        expect(await plugin.isAvailable()).toBe(true);
+        await plugin.generateResponse(makeRequest(), new AbortController().signal);
+        const headers = (calls[0].init?.headers ?? {}) as Record<string, string>;
+        expect(headers.Authorization).toBe("Bearer st_login-token");
+        expect(headers["x-opencode-org-id"]).toBe("wrk_workspace1");
     });
 
     it("degrades when no key exists anywhere and explains the fix", async () => {
