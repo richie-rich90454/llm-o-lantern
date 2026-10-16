@@ -20,6 +20,12 @@ type SpeechInputCoordinatorDependencies = {
 const STT_SAMPLE_RATE = 16000;
 const MIN_UTTERANCE_SECONDS = 0.25;
 
+// Browsers bind fetch to window: storing the native function and calling it
+// later as a method (this.fetchImpl(...)) throws "Illegal invocation". The
+// wrapper performs a fresh global call every time, keeping the native
+// receiver intact while still allowing tests to inject a replacement.
+const defaultFetch: typeof fetch = (input, init) => fetch(input, init);
+
 /**
  * Connects the microphone lifecycle, voice activity detection, transcription,
  * and conversation submission. Supports continuous auto-listening and a
@@ -35,7 +41,7 @@ export class SpeechInputCoordinator {
 
   constructor(dependencies: SpeechInputCoordinatorDependencies) {
     this.dependencies = dependencies;
-    this.fetchImpl = dependencies.fetchImpl ?? fetch;
+    this.fetchImpl = dependencies.fetchImpl ?? defaultFetch;
     dependencies.microphone.setFrameListener((frame) => {
       this.handleFrame(frame);
     });

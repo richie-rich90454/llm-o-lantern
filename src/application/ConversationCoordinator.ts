@@ -4,6 +4,12 @@ import type { CharacterController } from "./CharacterController";
 import type { AudioPlaybackController } from "../plugins/audio/AudioPlaybackController";
 import type { FacialAnimationController } from "../animation/FacialAnimationController";
 
+// Browsers bind fetch to window: storing the native function and calling it
+// later as a method (this.fetchImpl(...)) throws "Illegal invocation". The
+// wrapper performs a fresh global call every time, keeping the native
+// receiver intact while still allowing tests to inject a replacement.
+const defaultFetch: typeof fetch = (input, init) => fetch(input, init);
+
 export type TurnLatency = {
   dialogueMs: number;
   synthesisMs: number;
@@ -73,7 +79,7 @@ export class ConversationCoordinator {
 
   constructor(dependencies: ConversationCoordinatorDependencies) {
     this.dependencies = dependencies;
-    this.fetchImpl = dependencies.fetchImpl ?? fetch;
+    this.fetchImpl = dependencies.fetchImpl ?? defaultFetch;
   }
 
   isBusy(): boolean {

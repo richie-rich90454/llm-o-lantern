@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ConversationCoordinator, type TurnDiagnostics } from "../../src/application/ConversationCoordinator";
 import { CharacterController } from "../../src/application/CharacterController";
 import type { AudioPlaybackController } from "../../src/plugins/audio/AudioPlaybackController";
@@ -358,5 +358,36 @@ describe("ConversationCoordinator", () => {
     fireEnded();
     await submission;
     expect(coordinator.isBusy()).toBe(false);
+  });
+
+  it("calls the global fetch as a bare function, not as a method (browser Illegal invocation guard)", async () => {
+    const receivers: unknown[] = [];
+    const stub = async function (this: unknown): Promise<Response> {
+      receivers.push(this);
+      return jsonResponse(turnPayload({ degraded: true, audioWavBase64: null, track: null }));
+    };
+    vi.stubGlobal("fetch", stub);
+    try {
+      const { logger } = createCapturingLogger();
+      const character = new CharacterController({ logger, clock: () => 0 });
+      const { playback } = createPlaybackDouble();
+      const { facialAnimation } = createFacialDouble();
+      const coordinator = new ConversationCoordinator({
+        apiBaseUrl: API_BASE,
+        sessionId: SESSION_ID,
+        characterController: character,
+        audioPlayback: playback,
+        facialAnimation,
+        logger
+      });
+
+      await coordinator.submitUtterance("hello");
+
+      expect(receivers).toHaveLength(1);
+      expect(receivers[0]).not.toBe(coordinator);
+      expect(receivers[0] === undefined || receivers[0] === globalThis).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
