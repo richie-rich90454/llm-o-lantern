@@ -1,15 +1,19 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { APP_VERSION, ApplicationConfiguration, type ClientConfigPayload } from "../core/ApplicationConfiguration";
+import {
+    APP_VERSION,
+    ApplicationConfiguration,
+    type ClientConfigPayload,
+} from "../core/ApplicationConfiguration";
 import type { ApplicationLogger } from "../core/ApplicationLogger";
 import {
-  PluginManager,
-  type DialoguePluginShape,
-  type LipSyncPluginShape,
-  type PersonalityPluginShape,
-  type PluginCategory,
-  type PluginLike,
-  type SpeechRecognitionPluginShape,
-  type SpeechSynthesisPluginShape
+    PluginManager,
+    type DialoguePluginShape,
+    type LipSyncPluginShape,
+    type PersonalityPluginShape,
+    type PluginCategory,
+    type PluginLike,
+    type SpeechRecognitionPluginShape,
+    type SpeechSynthesisPluginShape,
 } from "../core/PluginManager";
 import { DialogueRequest } from "../data/DialogueRequest";
 import { DialogueResponse } from "../data/DialogueResponse";
@@ -22,40 +26,40 @@ import type { DialogueResponseProcessor } from "../application/DialogueResponseP
 import type { SpeechTimingProcessor } from "../animation/SpeechTimingProcessor";
 
 export type TurnResponsePayload = {
-  turnId: number;
-  text: string;
-  emotion: string;
-  delivery: string;
-  audioWavBase64: string | null;
-  sampleRate: number | null;
-  durationSeconds: number | null;
-  track: FacialAnimationTrackJson | null;
-  timingSource: string | null;
-  degraded: boolean;
-  dialogueFallback: boolean;
-  latency: {
-    dialogueMs: number;
-    synthesisMs: number;
-    timingMs: number;
-    lipSyncMs: number;
-    totalMs: number;
-  };
-  providers: { dialogue: string; speech: string };
+    turnId: number;
+    text: string;
+    emotion: string;
+    delivery: string;
+    audioWavBase64: string | null;
+    sampleRate: number | null;
+    durationSeconds: number | null;
+    track: FacialAnimationTrackJson | null;
+    timingSource: string | null;
+    degraded: boolean;
+    dialogueFallback: boolean;
+    latency: {
+        dialogueMs: number;
+        synthesisMs: number;
+        timingMs: number;
+        lipSyncMs: number;
+        totalMs: number;
+    };
+    providers: { dialogue: string; speech: string };
 };
 
 type ConversationRoutesDependencies = {
-  configuration: ApplicationConfiguration;
-  logger: ApplicationLogger;
-  pluginManager: PluginManager;
-  sessionManager: ConversationSessionManager;
-  responseProcessor: DialogueResponseProcessor;
-  speechTimingProcessor: SpeechTimingProcessor;
+    configuration: ApplicationConfiguration;
+    logger: ApplicationLogger;
+    pluginManager: PluginManager;
+    sessionManager: ConversationSessionManager;
+    responseProcessor: DialogueResponseProcessor;
+    speechTimingProcessor: SpeechTimingProcessor;
 };
 
 type RecentError = {
-  timestamp: string;
-  code: string;
-  message: string;
+    timestamp: string;
+    code: string;
+    message: string;
 };
 
 const JSON_BODY_LIMIT_BYTES = 262144;
@@ -67,549 +71,663 @@ const HEALTH_CACHE_MS = 10000;
 const HEALTH_PROBE_TIMEOUT_MS = 1500;
 
 export class ConversationRoutes {
-  private readonly configuration: ApplicationConfiguration;
-  private readonly logger: ApplicationLogger;
-  private readonly pluginManager: PluginManager;
-  private readonly sessionManager: ConversationSessionManager;
-  private readonly responseProcessor: DialogueResponseProcessor;
-  private readonly speechTimingProcessor: SpeechTimingProcessor;
+    private readonly configuration: ApplicationConfiguration;
+    private readonly logger: ApplicationLogger;
+    private readonly pluginManager: PluginManager;
+    private readonly sessionManager: ConversationSessionManager;
+    private readonly responseProcessor: DialogueResponseProcessor;
+    private readonly speechTimingProcessor: SpeechTimingProcessor;
 
-  private turnsCompleted = 0;
-  private turnsFailed = 0;
-  private fallbackTurns = 0;
-  private latencySamples = 0;
-  private readonly latencySums = { dialogueMs: 0, synthesisMs: 0, timingMs: 0, lipSyncMs: 0, totalMs: 0 };
-  private readonly timingSourceCounts = new Map<string, number>();
-  private readonly recentErrors: RecentError[] = [];
-  private healthCache: { timestamp: number; payload: unknown } | null = null;
-
-  constructor(dependencies: ConversationRoutesDependencies) {
-    this.configuration = dependencies.configuration;
-    this.logger = dependencies.logger;
-    this.pluginManager = dependencies.pluginManager;
-    this.sessionManager = dependencies.sessionManager;
-    this.responseProcessor = dependencies.responseProcessor;
-    this.speechTimingProcessor = dependencies.speechTimingProcessor;
-  }
-
-  async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const method = request.method ?? "GET";
-    const url = new URL(request.url ?? "/", "http://localhost");
-    const pathname = url.pathname;
-
-    try {
-      if (method === "GET" && pathname === "/api/client-config") {
-        this.handleClientConfig(response);
-        return;
-      }
-      if (method === "GET" && pathname === "/api/health") {
-        await this.handleHealth(response);
-        return;
-      }
-      if (method === "GET" && pathname === "/api/diagnostics") {
-        this.handleDiagnostics(response);
-        return;
-      }
-      if (method === "POST" && pathname === "/api/conversation/turn") {
-        await this.handleTurn(request, response);
-        return;
-      }
-      if (method === "POST" && pathname === "/api/conversation/reset") {
-        await this.handleReset(request, response);
-        return;
-      }
-      if (method === "POST" && pathname === "/api/speech/transcribe") {
-        await this.handleTranscribe(request, response);
-        return;
-      }
-      this.sendError(response, 404, "not-found", "Unknown API endpoint");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (error instanceof Error && error.name === "PayloadTooLargeError") {
-        this.sendError(response, 413, "payload-too-large", message);
-        return;
-      }
-      if (error instanceof Error && error.name === "InvalidJsonError") {
-        this.sendError(response, 400, "invalid-json", message);
-        return;
-      }
-      this.logger.error("Unhandled API error", { path: pathname, error: message });
-      if (!response.writableEnded) {
-        this.sendError(response, 500, "internal", "The booth backend hit an unexpected error");
-      }
-    }
-  }
-
-  private handleClientConfig(response: ServerResponse): void {
-    const publicConfig = this.configuration.getPublicBoothConfig();
-    const payload: ClientConfigPayload = {
-      ...publicConfig,
-      providerLabels: {
-        dialogue: this.labelForCategory("dialogue") ?? "none",
-        speechRecognition: this.pluginManager.hasCategory("speech-recognition")
-          ? this.labelForCategory("speech-recognition")
-          : null,
-        speechSynthesis: this.labelForCategory("speech-synthesis") ?? "none",
-        lipSync: this.labelForCategory("lip-sync") ?? "none",
-        personality: this.configuration.value.personality.characterName
-      }
+    private turnsCompleted = 0;
+    private turnsFailed = 0;
+    private fallbackTurns = 0;
+    private latencySamples = 0;
+    private readonly latencySums = {
+        dialogueMs: 0,
+        synthesisMs: 0,
+        timingMs: 0,
+        lipSyncMs: 0,
+        totalMs: 0,
     };
-    this.writeJson(response, 200, payload);
-  }
+    private readonly timingSourceCounts = new Map<string, number>();
+    private readonly recentErrors: RecentError[] = [];
+    private healthCache: { timestamp: number; payload: unknown } | null = null;
 
-  private labelForCategory(category: PluginCategory): string | null {
-    if (!this.pluginManager.hasCategory(category)) {
-      return null;
-    }
-    const plugin = this.pluginManager.getByCategory<PluginLike>(category);
-    if (typeof plugin.getDisplayName === "function") {
-      return plugin.getDisplayName();
-    }
-    return plugin.id;
-  }
-
-  private async handleTurn(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const body = await this.readJsonBody(request);
-    const parsed = parseTurnRequestBody(body);
-    if (parsed === null) {
-      this.sendError(response, 400, "invalid-request", "The turn request needs sessionId, turnId, and text");
-      return;
-    }
-    const { sessionId, turnId, text } = parsed;
-
-    const handle = this.sessionManager.beginTurn(sessionId, turnId);
-    if (handle === null) {
-      this.sendError(response, 409, "stale-turn", "A newer turn is already active for this session");
-      return;
+    constructor(dependencies: ConversationRoutesDependencies) {
+        this.configuration = dependencies.configuration;
+        this.logger = dependencies.logger;
+        this.pluginManager = dependencies.pluginManager;
+        this.sessionManager = dependencies.sessionManager;
+        this.responseProcessor = dependencies.responseProcessor;
+        this.speechTimingProcessor = dependencies.speechTimingProcessor;
     }
 
-    const abortController = new AbortController();
-    this.sessionManager.setActiveTurnController(sessionId, abortController);
-    request.on("close", () => {
-      if (!response.writableEnded) {
-        abortController.abort();
-      }
-    });
-    const combined = AbortSignal.any([
-      abortController.signal,
-      AbortSignal.timeout(this.configuration.value.conversation.turnTimeoutMs)
-    ]);
+    async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+        const method = request.method ?? "GET";
+        const url = new URL(request.url ?? "/", "http://localhost");
+        const pathname = url.pathname;
 
-    const personality = this.pluginManager.getByCategory<PersonalityPluginShape>("personality");
-    const dialogue = this.pluginManager.getByCategory<DialoguePluginShape>("dialogue");
-
-    const t0 = Date.now();
-    const dialogueStart = Date.now();
-    let raw: DialogueResponse;
-    let dialogueFallback = false;
-
-    const secret = personality.matchesSecretPhrase(text);
-    try {
-      if (secret !== null) {
-        raw = new DialogueResponse(secret.text, secret.emotion, secret.delivery, "personality.haunted-pumpkin");
-      } else {
-        const dialogueRequest = new DialogueRequest({
-          sessionId,
-          turnId,
-          text,
-          history: this.sessionManager.getHistory(sessionId),
-          instructions: personality.buildInstructions(),
-          allowedEmotions: personality.getAllowedEmotions(),
-          allowedDeliveries: personality.getAllowedDeliveries(),
-          maxResponseCharacters: personality.getResponseCharacterLimit()
-        });
-        raw = await dialogue.generateResponse(dialogueRequest, combined);
-      }
-    } catch (error) {
-      if (abortController.signal.aborted) {
-        if (!response.writableEnded) {
-          response.end();
-        }
-        return;
-      }
-      if (combined.aborted) {
-        this.sendError(
-          response,
-          504,
-          "dialogue-timeout",
-          `The dialogue provider did not answer within ${this.configuration.value.conversation.turnTimeoutMs} ms`
-        );
-        return;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      if (this.configuration.value.dialogue.scripted.fallbackEnabled && this.pluginManager.hasPlugin("dialogue.scripted")) {
         try {
-          const scriptedRequest = new DialogueRequest({
-            sessionId,
+            if (method === "GET" && pathname === "/api/client-config") {
+                this.handleClientConfig(response);
+                return;
+            }
+            if (method === "GET" && pathname === "/api/health") {
+                await this.handleHealth(response);
+                return;
+            }
+            if (method === "GET" && pathname === "/api/diagnostics") {
+                this.handleDiagnostics(response);
+                return;
+            }
+            if (method === "POST" && pathname === "/api/conversation/turn") {
+                await this.handleTurn(request, response);
+                return;
+            }
+            if (method === "POST" && pathname === "/api/conversation/reset") {
+                await this.handleReset(request, response);
+                return;
+            }
+            if (method === "POST" && pathname === "/api/speech/transcribe") {
+                await this.handleTranscribe(request, response);
+                return;
+            }
+            this.sendError(response, 404, "not-found", "Unknown API endpoint");
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (error instanceof Error && error.name === "PayloadTooLargeError") {
+                this.sendError(response, 413, "payload-too-large", message);
+                return;
+            }
+            if (error instanceof Error && error.name === "InvalidJsonError") {
+                this.sendError(response, 400, "invalid-json", message);
+                return;
+            }
+            this.logger.error("Unhandled API error", { path: pathname, error: message });
+            if (!response.writableEnded) {
+                this.sendError(
+                    response,
+                    500,
+                    "internal",
+                    "The booth backend hit an unexpected error",
+                );
+            }
+        }
+    }
+
+    private handleClientConfig(response: ServerResponse): void {
+        const publicConfig = this.configuration.getPublicBoothConfig();
+        const payload: ClientConfigPayload = {
+            ...publicConfig,
+            providerLabels: {
+                dialogue: this.labelForCategory("dialogue") ?? "none",
+                speechRecognition: this.pluginManager.hasCategory("speech-recognition")
+                    ? this.labelForCategory("speech-recognition")
+                    : null,
+                speechSynthesis: this.labelForCategory("speech-synthesis") ?? "none",
+                lipSync: this.labelForCategory("lip-sync") ?? "none",
+                personality: this.configuration.value.personality.characterName,
+            },
+        };
+        this.writeJson(response, 200, payload);
+    }
+
+    private labelForCategory(category: PluginCategory): string | null {
+        if (!this.pluginManager.hasCategory(category)) {
+            return null;
+        }
+        const plugin = this.pluginManager.getByCategory<PluginLike>(category);
+        if (typeof plugin.getDisplayName === "function") {
+            return plugin.getDisplayName();
+        }
+        return plugin.id;
+    }
+
+    private async handleTurn(request: IncomingMessage, response: ServerResponse): Promise<void> {
+        const body = await this.readJsonBody(request);
+        const parsed = parseTurnRequestBody(body);
+        if (parsed === null) {
+            this.sendError(
+                response,
+                400,
+                "invalid-request",
+                "The turn request needs sessionId, turnId, and text",
+            );
+            return;
+        }
+        const { sessionId, turnId, text } = parsed;
+
+        const handle = this.sessionManager.beginTurn(sessionId, turnId);
+        if (handle === null) {
+            this.sendError(
+                response,
+                409,
+                "stale-turn",
+                "A newer turn is already active for this session",
+            );
+            return;
+        }
+
+        const abortController = new AbortController();
+        this.sessionManager.setActiveTurnController(sessionId, abortController);
+        request.on("close", () => {
+            if (!response.writableEnded) {
+                abortController.abort();
+            }
+        });
+        const combined = AbortSignal.any([
+            abortController.signal,
+            AbortSignal.timeout(this.configuration.value.conversation.turnTimeoutMs),
+        ]);
+
+        const personality = this.pluginManager.getByCategory<PersonalityPluginShape>("personality");
+        const dialogue = this.pluginManager.getByCategory<DialoguePluginShape>("dialogue");
+
+        const t0 = Date.now();
+        const dialogueStart = Date.now();
+        let raw: DialogueResponse;
+        let dialogueFallback = false;
+
+        const secret = personality.matchesSecretPhrase(text);
+        try {
+            if (secret !== null) {
+                raw = new DialogueResponse(
+                    secret.text,
+                    secret.emotion,
+                    secret.delivery,
+                    "personality.haunted-pumpkin",
+                );
+            } else {
+                const dialogueRequest = new DialogueRequest({
+                    sessionId,
+                    turnId,
+                    text,
+                    history: this.sessionManager.getHistory(sessionId),
+                    instructions: personality.buildInstructions(),
+                    allowedEmotions: personality.getAllowedEmotions(),
+                    allowedDeliveries: personality.getAllowedDeliveries(),
+                    maxResponseCharacters: personality.getResponseCharacterLimit(),
+                });
+                raw = await dialogue.generateResponse(dialogueRequest, combined);
+            }
+        } catch (error) {
+            if (abortController.signal.aborted) {
+                if (!response.writableEnded) {
+                    response.end();
+                }
+                return;
+            }
+            if (combined.aborted) {
+                this.sendError(
+                    response,
+                    504,
+                    "dialogue-timeout",
+                    `The dialogue provider did not answer within ${this.configuration.value.conversation.turnTimeoutMs} ms`,
+                );
+                return;
+            }
+            const message = error instanceof Error ? error.message : String(error);
+            if (
+                this.configuration.value.dialogue.scripted.fallbackEnabled &&
+                this.pluginManager.hasPlugin("dialogue.scripted")
+            ) {
+                try {
+                    const scriptedRequest = new DialogueRequest({
+                        sessionId,
+                        turnId,
+                        text,
+                        history: this.sessionManager.getHistory(sessionId),
+                        instructions: personality.buildInstructions(),
+                        allowedEmotions: personality.getAllowedEmotions(),
+                        allowedDeliveries: personality.getAllowedDeliveries(),
+                        maxResponseCharacters: personality.getResponseCharacterLimit(),
+                    });
+                    raw = await this.pluginManager
+                        .getPlugin<DialoguePluginShape>("dialogue.scripted")
+                        .generateResponse(scriptedRequest, combined);
+                    dialogueFallback = true;
+                    this.fallbackTurns += 1;
+                    this.logger.warn("Primary dialogue provider failed; scripted fallback used", {
+                        error: message,
+                    });
+                } catch (fallbackError) {
+                    const fallbackMessage =
+                        fallbackError instanceof Error
+                            ? fallbackError.message
+                            : String(fallbackError);
+                    this.sendError(
+                        response,
+                        502,
+                        "dialogue-unavailable",
+                        `Dialogue failed: ${message}; fallback failed: ${fallbackMessage}`,
+                    );
+                    return;
+                }
+            } else {
+                this.sendError(
+                    response,
+                    502,
+                    "dialogue-unavailable",
+                    `Dialogue provider failed: ${message}`,
+                );
+                return;
+            }
+        }
+        const dialogueMs = Date.now() - dialogueStart;
+
+        let processed: DialogueResponse;
+        try {
+            processed = this.responseProcessor.process(raw, personality);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.sendError(response, 502, "processing-failed", message);
+            return;
+        }
+
+        const synthesisStart = Date.now();
+        const speech =
+            this.pluginManager.getByCategory<SpeechSynthesisPluginShape>("speech-synthesis");
+        let speechResult: SpeechResult | null = null;
+        let degraded = false;
+        try {
+            speechResult = await speech.synthesize(
+                processed.text,
+                { emotion: processed.emotion, delivery: processed.delivery },
+                combined,
+            );
+        } catch (error) {
+            if (abortController.signal.aborted) {
+                if (!response.writableEnded) {
+                    response.end();
+                }
+                return;
+            }
+            if (combined.aborted) {
+                this.sendError(
+                    response,
+                    504,
+                    "synthesis-timeout",
+                    "Speech synthesis did not finish before the turn timeout",
+                );
+                return;
+            }
+            degraded = true;
+            this.logger.error("Speech synthesis failed; responding with subtitles only", {
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+        const synthesisMs = Date.now() - synthesisStart;
+
+        let timing: SpeechTiming | null = null;
+        let track: FacialAnimationTrack | null = null;
+        let timingMs = 0;
+        let lipSyncMs = 0;
+        if (speechResult !== null) {
+            const timingStart = Date.now();
+            timing = speechResult.timing;
+            if (timing === null) {
+                timing = this.alignOrEstimate(processed.text, speechResult);
+            }
+            timingMs = Date.now() - timingStart;
+
+            const lipSyncStart = Date.now();
+            track = this.pluginManager
+                .getByCategory<LipSyncPluginShape>("lip-sync")
+                .generateTrack(timing);
+            lipSyncMs = Date.now() - lipSyncStart;
+            this.timingSourceCounts.set(
+                timing.source,
+                (this.timingSourceCounts.get(timing.source) ?? 0) + 1,
+            );
+        }
+
+        if (!handle.isCurrent()) {
+            this.sessionManager.setActiveTurnController(sessionId, null);
+            this.sendError(
+                response,
+                409,
+                "stale-turn",
+                "The turn was superseded while it was being prepared",
+            );
+            return;
+        }
+        this.sessionManager.setActiveTurnController(sessionId, null);
+
+        this.sessionManager.recordVisitorMessage(sessionId, text);
+        this.sessionManager.recordCharacterMessage(sessionId, processed.text);
+
+        const totalMs = Date.now() - t0;
+        this.turnsCompleted += 1;
+        this.latencySamples += 1;
+        this.latencySums.dialogueMs += dialogueMs;
+        this.latencySums.synthesisMs += synthesisMs;
+        this.latencySums.timingMs += timingMs;
+        this.latencySums.lipSyncMs += lipSyncMs;
+        this.latencySums.totalMs += totalMs;
+
+        const payload: TurnResponsePayload = {
             turnId,
-            text,
-            history: this.sessionManager.getHistory(sessionId),
-            instructions: personality.buildInstructions(),
-            allowedEmotions: personality.getAllowedEmotions(),
-            allowedDeliveries: personality.getAllowedDeliveries(),
-            maxResponseCharacters: personality.getResponseCharacterLimit()
-          });
-          raw = await this.pluginManager
-            .getPlugin<DialoguePluginShape>("dialogue.scripted")
-            .generateResponse(scriptedRequest, combined);
-          dialogueFallback = true;
-          this.fallbackTurns += 1;
-          this.logger.warn("Primary dialogue provider failed; scripted fallback used", { error: message });
-        } catch (fallbackError) {
-          const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-          this.sendError(response, 502, "dialogue-unavailable", `Dialogue failed: ${message}; fallback failed: ${fallbackMessage}`);
-          return;
+            text: processed.text,
+            emotion: processed.emotion,
+            delivery: processed.delivery,
+            audioWavBase64:
+                speechResult !== null
+                    ? Buffer.from(speechResult.audioWav).toString("base64")
+                    : null,
+            sampleRate: speechResult !== null ? speechResult.sampleRate : null,
+            durationSeconds: speechResult !== null ? speechResult.durationSeconds : null,
+            track: track !== null ? track.toJson() : null,
+            timingSource: timing !== null ? timing.source : null,
+            degraded,
+            dialogueFallback,
+            latency: { dialogueMs, synthesisMs, timingMs, lipSyncMs, totalMs },
+            providers: {
+                dialogue: raw.providerId,
+                speech: speechResult !== null ? speechResult.voiceId : "none",
+            },
+        };
+        this.logger.debug("Turn completed", {
+            turnId,
+            totalMs,
+            degraded,
+            dialogueFallback,
+            timingSource: timing?.source,
+        });
+        this.writeJson(response, 200, payload);
+    }
+
+    private alignOrEstimate(text: string, speechResult: SpeechResult): SpeechTiming {
+        try {
+            return this.speechTimingProcessor.alignTextToAudio(text, speechResult.audioWav);
+        } catch (error) {
+            this.logger.warn("Energy alignment failed; falling back to estimated timing", {
+                error: error instanceof Error ? error.message : String(error),
+            });
+            return this.speechTimingProcessor.estimateFromTextOnly(
+                text,
+                speechResult.durationSeconds,
+            );
         }
-      } else {
-        this.sendError(response, 502, "dialogue-unavailable", `Dialogue provider failed: ${message}`);
-        return;
-      }
-    }
-    const dialogueMs = Date.now() - dialogueStart;
-
-    let processed: DialogueResponse;
-    try {
-      processed = this.responseProcessor.process(raw, personality);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.sendError(response, 502, "processing-failed", message);
-      return;
     }
 
-    const synthesisStart = Date.now();
-    const speech = this.pluginManager.getByCategory<SpeechSynthesisPluginShape>("speech-synthesis");
-    let speechResult: SpeechResult | null = null;
-    let degraded = false;
-    try {
-      speechResult = await speech.synthesize(
-        processed.text,
-        { emotion: processed.emotion, delivery: processed.delivery },
-        combined
-      );
-    } catch (error) {
-      if (abortController.signal.aborted) {
-        if (!response.writableEnded) {
-          response.end();
+    private async handleTranscribe(
+        request: IncomingMessage,
+        response: ServerResponse,
+    ): Promise<void> {
+        if (!this.pluginManager.hasCategory("speech-recognition")) {
+            this.sendError(
+                response,
+                503,
+                "stt-unavailable",
+                "Speech recognition is not enabled in configuration",
+            );
+            return;
         }
-        return;
-      }
-      if (combined.aborted) {
-        this.sendError(response, 504, "synthesis-timeout", "Speech synthesis did not finish before the turn timeout");
-        return;
-      }
-      degraded = true;
-      this.logger.error("Speech synthesis failed; responding with subtitles only", {
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-    const synthesisMs = Date.now() - synthesisStart;
-
-    let timing: SpeechTiming | null = null;
-    let track: FacialAnimationTrack | null = null;
-    let timingMs = 0;
-    let lipSyncMs = 0;
-    if (speechResult !== null) {
-      const timingStart = Date.now();
-      timing = speechResult.timing;
-      if (timing === null) {
-        timing = this.alignOrEstimate(processed.text, speechResult);
-      }
-      timingMs = Date.now() - timingStart;
-
-      const lipSyncStart = Date.now();
-      track = this.pluginManager.getByCategory<LipSyncPluginShape>("lip-sync").generateTrack(timing);
-      lipSyncMs = Date.now() - lipSyncStart;
-      this.timingSourceCounts.set(timing.source, (this.timingSourceCounts.get(timing.source) ?? 0) + 1);
-    }
-
-    if (!handle.isCurrent()) {
-      this.sessionManager.setActiveTurnController(sessionId, null);
-      this.sendError(response, 409, "stale-turn", "The turn was superseded while it was being prepared");
-      return;
-    }
-    this.sessionManager.setActiveTurnController(sessionId, null);
-
-    this.sessionManager.recordVisitorMessage(sessionId, text);
-    this.sessionManager.recordCharacterMessage(sessionId, processed.text);
-
-    const totalMs = Date.now() - t0;
-    this.turnsCompleted += 1;
-    this.latencySamples += 1;
-    this.latencySums.dialogueMs += dialogueMs;
-    this.latencySums.synthesisMs += synthesisMs;
-    this.latencySums.timingMs += timingMs;
-    this.latencySums.lipSyncMs += lipSyncMs;
-    this.latencySums.totalMs += totalMs;
-
-    const payload: TurnResponsePayload = {
-      turnId,
-      text: processed.text,
-      emotion: processed.emotion,
-      delivery: processed.delivery,
-      audioWavBase64: speechResult !== null ? Buffer.from(speechResult.audioWav).toString("base64") : null,
-      sampleRate: speechResult !== null ? speechResult.sampleRate : null,
-      durationSeconds: speechResult !== null ? speechResult.durationSeconds : null,
-      track: track !== null ? track.toJson() : null,
-      timingSource: timing !== null ? timing.source : null,
-      degraded,
-      dialogueFallback,
-      latency: { dialogueMs, synthesisMs, timingMs, lipSyncMs, totalMs },
-      providers: {
-        dialogue: raw.providerId,
-        speech: speechResult !== null ? speechResult.voiceId : "none"
-      }
-    };
-    this.logger.debug("Turn completed", { turnId, totalMs, degraded, dialogueFallback, timingSource: timing?.source });
-    this.writeJson(response, 200, payload);
-  }
-
-  private alignOrEstimate(text: string, speechResult: SpeechResult): SpeechTiming {
-    try {
-      return this.speechTimingProcessor.alignTextToAudio(text, speechResult.audioWav);
-    } catch (error) {
-      this.logger.warn("Energy alignment failed; falling back to estimated timing", {
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return this.speechTimingProcessor.estimateFromTextOnly(text, speechResult.durationSeconds);
-    }
-  }
-
-  private async handleTranscribe(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (!this.pluginManager.hasCategory("speech-recognition")) {
-      this.sendError(response, 503, "stt-unavailable", "Speech recognition is not enabled in configuration");
-      return;
-    }
-    const contentType = String(request.headers["content-type"] ?? "");
-    if (!contentType.includes("audio/wav") && !contentType.includes("application/octet-stream")) {
-      this.sendError(response, 415, "unsupported-media-type", "Send captured audio as Content-Type audio/wav");
-      return;
-    }
-
-    const bytes = await this.readBinaryBody(request);
-    let sampleRate: number;
-    try {
-      sampleRate = decodeWav(bytes).sampleRate;
-    } catch (error) {
-      this.sendError(response, 400, "invalid-audio", error instanceof Error ? error.message : String(error));
-      return;
-    }
-
-    const closeController = new AbortController();
-    request.on("close", () => {
-      if (!response.writableEnded) {
-        closeController.abort();
-      }
-    });
-    const signal = AbortSignal.any([
-      closeController.signal,
-      AbortSignal.timeout(this.configuration.value.speechRecognition.timeoutMs)
-    ]);
-
-    try {
-      const recognition = this.pluginManager.getByCategory<SpeechRecognitionPluginShape>("speech-recognition");
-      const result = await recognition.transcribe(bytes, sampleRate, signal);
-      this.writeJson(response, 200, { text: result.text, confidence: result.confidence });
-    } catch (error) {
-      if (closeController.signal.aborted) {
-        if (!response.writableEnded) {
-          response.end();
+        const contentType = String(request.headers["content-type"] ?? "");
+        if (
+            !contentType.includes("audio/wav") &&
+            !contentType.includes("application/octet-stream")
+        ) {
+            this.sendError(
+                response,
+                415,
+                "unsupported-media-type",
+                "Send captured audio as Content-Type audio/wav",
+            );
+            return;
         }
-        return;
-      }
-      if (signal.aborted) {
-        this.sendError(response, 504, "transcribe-timeout", "Speech recognition did not finish in time");
-        return;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.sendError(response, 502, "transcription-failed", message);
-    }
-  }
 
-  private async handleReset(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const body = await this.readJsonBody(request);
-    const sessionId = readSessionId(body);
-    if (sessionId === null) {
-      this.sendError(response, 400, "invalid-request", "The reset request needs a sessionId");
-      return;
-    }
-    this.sessionManager.reset(sessionId);
-    this.logger.info("Visitor session reset", { sessionId });
-    this.writeJson(response, 200, { ok: true });
-  }
-
-  private async handleHealth(response: ServerResponse): Promise<void> {
-    const now = Date.now();
-    if (this.healthCache !== null && now - this.healthCache.timestamp < HEALTH_CACHE_MS) {
-      this.writeJson(response, 200, this.healthCache.payload);
-      return;
-    }
-
-    const plugins = this.pluginManager.listLoaded();
-    const entries: { id: string; category: string; available: boolean | null }[] = [];
-    for (const plugin of plugins) {
-      entries.push({
-        id: plugin.id,
-        category: plugin.category,
-        available: await this.probeAvailability(plugin)
-      });
-    }
-    const degraded = entries.some((entry) => entry.available === false);
-    const payload = {
-      status: degraded ? "degraded" : "ok",
-      version: APP_VERSION,
-      uptimeSeconds: Math.round(process.uptime()),
-      plugins: entries
-    };
-    this.healthCache = { timestamp: now, payload };
-    this.writeJson(response, 200, payload);
-  }
-
-  private async probeAvailability(plugin: PluginLike): Promise<boolean | null> {
-    if (typeof plugin.isAvailable !== "function") {
-      return null;
-    }
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    try {
-      const timeout = new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), HEALTH_PROBE_TIMEOUT_MS);
-      });
-      return await Promise.race([plugin.isAvailable(), timeout]);
-    } catch {
-      return false;
-    } finally {
-      if (timer !== null) {
-        clearTimeout(timer);
-      }
-    }
-  }
-
-  private handleDiagnostics(response: ServerResponse): void {
-    const averageLatency =
-      this.latencySamples > 0
-        ? {
-            dialogueMs: Math.round(this.latencySums.dialogueMs / this.latencySamples),
-            synthesisMs: Math.round(this.latencySums.synthesisMs / this.latencySamples),
-            timingMs: Math.round(this.latencySums.timingMs / this.latencySamples),
-            lipSyncMs: Math.round(this.latencySums.lipSyncMs / this.latencySamples),
-            totalMs: Math.round(this.latencySums.totalMs / this.latencySamples)
-          }
-        : null;
-    this.writeJson(response, 200, {
-      version: APP_VERSION,
-      uptimeSeconds: Math.round(process.uptime()),
-      turnsCompleted: this.turnsCompleted,
-      turnsFailed: this.turnsFailed,
-      fallbackTurns: this.fallbackTurns,
-      averageLatency,
-      timingSources: Object.fromEntries(this.timingSourceCounts),
-      recentErrors: [...this.recentErrors],
-      activeSessions: this.sessionManager.getActiveSessionCount()
-    });
-  }
-
-  private recordError(code: string, message: string): void {
-    this.recentErrors.push({ timestamp: new Date().toISOString(), code, message });
-    while (this.recentErrors.length > RECENT_ERROR_LIMIT) {
-      this.recentErrors.shift();
-    }
-  }
-
-  private writeJson(response: ServerResponse, status: number, payload: unknown): void {
-    if (response.writableEnded) {
-      return;
-    }
-    const body = JSON.stringify(payload);
-    response.writeHead(status, {
-      "Content-Type": "application/json; charset=utf-8",
-      "Content-Length": Buffer.byteLength(body),
-      "Cache-Control": "no-store"
-    });
-    response.end(body);
-  }
-
-  private sendError(response: ServerResponse, status: number, code: string, message: string): void {
-    this.recordError(code, message);
-    if (status >= 500) {
-      this.logger.error(`Request failed (${code})`, { status, message });
-      this.turnsFailed += 1;
-    } else {
-      this.logger.warn(`Request rejected (${code})`, { status, message });
-    }
-    this.writeJson(response, status, { error: { code, message } });
-  }
-
-  private readJsonBody(request: IncomingMessage, limitBytes = JSON_BODY_LIMIT_BYTES): Promise<unknown> {
-    return this.readBody(request, limitBytes).then((bytes) => {
-      try {
-        return JSON.parse(Buffer.from(bytes).toString("utf8"));
-      } catch {
-        const error = new Error("Request body is not valid JSON");
-        error.name = "InvalidJsonError";
-        throw error;
-      }
-    });
-  }
-
-  private readBinaryBody(request: IncomingMessage, limitBytes = BINARY_BODY_LIMIT_BYTES): Promise<Uint8Array> {
-    return this.readBody(request, limitBytes);
-  }
-
-  private readBody(request: IncomingMessage, limitBytes: number): Promise<Uint8Array> {
-    return new Promise((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      let total = 0;
-      request.on("data", (chunk: Buffer) => {
-        total += chunk.length;
-        if (total > limitBytes) {
-          const error = new Error(`Request body exceeds the ${limitBytes} byte limit`);
-          error.name = "PayloadTooLargeError";
-          request.destroy();
-          reject(error);
-          return;
+        const bytes = await this.readBinaryBody(request);
+        let sampleRate: number;
+        try {
+            sampleRate = decodeWav(bytes).sampleRate;
+        } catch (error) {
+            this.sendError(
+                response,
+                400,
+                "invalid-audio",
+                error instanceof Error ? error.message : String(error),
+            );
+            return;
         }
-        chunks.push(chunk);
-      });
-      request.on("end", () => {
-        resolve(new Uint8Array(Buffer.concat(chunks)));
-      });
-      request.on("error", (error) => {
-        reject(error);
-      });
-    });
-  }
+
+        const closeController = new AbortController();
+        request.on("close", () => {
+            if (!response.writableEnded) {
+                closeController.abort();
+            }
+        });
+        const signal = AbortSignal.any([
+            closeController.signal,
+            AbortSignal.timeout(this.configuration.value.speechRecognition.timeoutMs),
+        ]);
+
+        try {
+            const recognition =
+                this.pluginManager.getByCategory<SpeechRecognitionPluginShape>(
+                    "speech-recognition",
+                );
+            const result = await recognition.transcribe(bytes, sampleRate, signal);
+            this.writeJson(response, 200, { text: result.text, confidence: result.confidence });
+        } catch (error) {
+            if (closeController.signal.aborted) {
+                if (!response.writableEnded) {
+                    response.end();
+                }
+                return;
+            }
+            if (signal.aborted) {
+                this.sendError(
+                    response,
+                    504,
+                    "transcribe-timeout",
+                    "Speech recognition did not finish in time",
+                );
+                return;
+            }
+            const message = error instanceof Error ? error.message : String(error);
+            this.sendError(response, 502, "transcription-failed", message);
+        }
+    }
+
+    private async handleReset(request: IncomingMessage, response: ServerResponse): Promise<void> {
+        const body = await this.readJsonBody(request);
+        const sessionId = readSessionId(body);
+        if (sessionId === null) {
+            this.sendError(response, 400, "invalid-request", "The reset request needs a sessionId");
+            return;
+        }
+        this.sessionManager.reset(sessionId);
+        this.logger.info("Visitor session reset", { sessionId });
+        this.writeJson(response, 200, { ok: true });
+    }
+
+    private async handleHealth(response: ServerResponse): Promise<void> {
+        const now = Date.now();
+        if (this.healthCache !== null && now - this.healthCache.timestamp < HEALTH_CACHE_MS) {
+            this.writeJson(response, 200, this.healthCache.payload);
+            return;
+        }
+
+        const plugins = this.pluginManager.listLoaded();
+        const entries: { id: string; category: string; available: boolean | null }[] = [];
+        for (const plugin of plugins) {
+            entries.push({
+                id: plugin.id,
+                category: plugin.category,
+                available: await this.probeAvailability(plugin),
+            });
+        }
+        const degraded = entries.some((entry) => entry.available === false);
+        const payload = {
+            status: degraded ? "degraded" : "ok",
+            version: APP_VERSION,
+            uptimeSeconds: Math.round(process.uptime()),
+            plugins: entries,
+        };
+        this.healthCache = { timestamp: now, payload };
+        this.writeJson(response, 200, payload);
+    }
+
+    private async probeAvailability(plugin: PluginLike): Promise<boolean | null> {
+        if (typeof plugin.isAvailable !== "function") {
+            return null;
+        }
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        try {
+            const timeout = new Promise<boolean>((resolve) => {
+                timer = setTimeout(() => resolve(false), HEALTH_PROBE_TIMEOUT_MS);
+            });
+            return await Promise.race([plugin.isAvailable(), timeout]);
+        } catch {
+            return false;
+        } finally {
+            if (timer !== null) {
+                clearTimeout(timer);
+            }
+        }
+    }
+
+    private handleDiagnostics(response: ServerResponse): void {
+        const averageLatency =
+            this.latencySamples > 0
+                ? {
+                      dialogueMs: Math.round(this.latencySums.dialogueMs / this.latencySamples),
+                      synthesisMs: Math.round(this.latencySums.synthesisMs / this.latencySamples),
+                      timingMs: Math.round(this.latencySums.timingMs / this.latencySamples),
+                      lipSyncMs: Math.round(this.latencySums.lipSyncMs / this.latencySamples),
+                      totalMs: Math.round(this.latencySums.totalMs / this.latencySamples),
+                  }
+                : null;
+        this.writeJson(response, 200, {
+            version: APP_VERSION,
+            uptimeSeconds: Math.round(process.uptime()),
+            turnsCompleted: this.turnsCompleted,
+            turnsFailed: this.turnsFailed,
+            fallbackTurns: this.fallbackTurns,
+            averageLatency,
+            timingSources: Object.fromEntries(this.timingSourceCounts),
+            recentErrors: [...this.recentErrors],
+            activeSessions: this.sessionManager.getActiveSessionCount(),
+        });
+    }
+
+    private recordError(code: string, message: string): void {
+        this.recentErrors.push({ timestamp: new Date().toISOString(), code, message });
+        while (this.recentErrors.length > RECENT_ERROR_LIMIT) {
+            this.recentErrors.shift();
+        }
+    }
+
+    private writeJson(response: ServerResponse, status: number, payload: unknown): void {
+        if (response.writableEnded) {
+            return;
+        }
+        const body = JSON.stringify(payload);
+        response.writeHead(status, {
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Length": Buffer.byteLength(body),
+            "Cache-Control": "no-store",
+        });
+        response.end(body);
+    }
+
+    private sendError(
+        response: ServerResponse,
+        status: number,
+        code: string,
+        message: string,
+    ): void {
+        this.recordError(code, message);
+        if (status >= 500) {
+            this.logger.error(`Request failed (${code})`, { status, message });
+            this.turnsFailed += 1;
+        } else {
+            this.logger.warn(`Request rejected (${code})`, { status, message });
+        }
+        this.writeJson(response, status, { error: { code, message } });
+    }
+
+    private readJsonBody(
+        request: IncomingMessage,
+        limitBytes = JSON_BODY_LIMIT_BYTES,
+    ): Promise<unknown> {
+        return this.readBody(request, limitBytes).then((bytes) => {
+            try {
+                return JSON.parse(Buffer.from(bytes).toString("utf8"));
+            } catch {
+                const error = new Error("Request body is not valid JSON");
+                error.name = "InvalidJsonError";
+                throw error;
+            }
+        });
+    }
+
+    private readBinaryBody(
+        request: IncomingMessage,
+        limitBytes = BINARY_BODY_LIMIT_BYTES,
+    ): Promise<Uint8Array> {
+        return this.readBody(request, limitBytes);
+    }
+
+    private readBody(request: IncomingMessage, limitBytes: number): Promise<Uint8Array> {
+        return new Promise((resolve, reject) => {
+            const chunks: Buffer[] = [];
+            let total = 0;
+            request.on("data", (chunk: Buffer) => {
+                total += chunk.length;
+                if (total > limitBytes) {
+                    const error = new Error(`Request body exceeds the ${limitBytes} byte limit`);
+                    error.name = "PayloadTooLargeError";
+                    request.destroy();
+                    reject(error);
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            request.on("end", () => {
+                resolve(new Uint8Array(Buffer.concat(chunks)));
+            });
+            request.on("error", (error) => {
+                reject(error);
+            });
+        });
+    }
 }
 
-function parseTurnRequestBody(body: unknown): { sessionId: string; turnId: number; text: string } | null {
-  if (typeof body !== "object" || body === null) {
-    return null;
-  }
-  const record = body as Record<string, unknown>;
-  const sessionId = record.sessionId;
-  const turnId = record.turnId;
-  const text = record.text;
-  if (typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) {
-    return null;
-  }
-  if (typeof turnId !== "number" || !Number.isInteger(turnId) || turnId < 1) {
-    return null;
-  }
-  if (typeof text !== "string") {
-    return null;
-  }
-  const trimmed = text.trim();
-  if (trimmed.length === 0 || trimmed.length > MAX_VISITOR_TEXT_LENGTH) {
-    return null;
-  }
-  return { sessionId, turnId, text: trimmed };
+function parseTurnRequestBody(
+    body: unknown,
+): { sessionId: string; turnId: number; text: string } | null {
+    if (typeof body !== "object" || body === null) {
+        return null;
+    }
+    const record = body as Record<string, unknown>;
+    const sessionId = record.sessionId;
+    const turnId = record.turnId;
+    const text = record.text;
+    if (typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) {
+        return null;
+    }
+    if (typeof turnId !== "number" || !Number.isInteger(turnId) || turnId < 1) {
+        return null;
+    }
+    if (typeof text !== "string") {
+        return null;
+    }
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || trimmed.length > MAX_VISITOR_TEXT_LENGTH) {
+        return null;
+    }
+    return { sessionId, turnId, text: trimmed };
 }
 
 function readSessionId(body: unknown): string | null {
-  if (typeof body !== "object" || body === null) {
-    return null;
-  }
-  const sessionId = (body as Record<string, unknown>).sessionId;
-  if (typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) {
-    return null;
-  }
-  return sessionId;
+    if (typeof body !== "object" || body === null) {
+        return null;
+    }
+    const sessionId = (body as Record<string, unknown>).sessionId;
+    if (typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) {
+        return null;
+    }
+    return sessionId;
 }

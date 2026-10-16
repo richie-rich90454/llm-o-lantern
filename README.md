@@ -1,35 +1,19 @@
 # llm-o-lantern
 
-A modular, local-first, conversational 3D jack-o'-lantern for a Halloween
-booth. It listens through a microphone, answers with an LLM, speaks with a
-neural voice, and drives a live 3D pumpkin face from the speech audio.
+A modular, local-first, conversational 3D jack-o'-lantern for a Halloween booth. It listens through a microphone, answers with an LLM, speaks with a neural voice, and drives a live 3D pumpkin face from the speech audio.
 
-Out of the box the dialogue provider is **OpenRouter** using the free
-`nvidia/nemotron-3.5-super-vl:free` model (paste your key into `.env`). Without a
-key the booth still runs and answers with the scripted fallback dialogue.
-Every provider is replaceable: local Ollama, a self-hosted llama.cpp server,
-any of the other remote presets, local Kokoro/Piper voices, and local Whisper
-speech recognition all plug into the same boundaries.
+Out of the box the dialogue provider is **OpenRouter** using the free `nvidia/nemotron-3.5-super-vl:free` model (paste your key into `.env`). Without a key the booth still runs and answers with the scripted fallback dialogue. Every provider is replaceable: local Ollama, a self-hosted llama.cpp server, any of the other remote presets, local Kokoro/Piper voices, and local Whisper speech recognition all plug into the same boundaries.
 
-See DESCRIPTION.md for the product description, DESIGN.md for the architecture,
-PLAN.md for the delivery record, and PROJECT-RULES.md for the engineering
-rules.
+See DESCRIPTION.md for the product description, DESIGN.md for the architecture, PLAN.md for the delivery record, and PROJECT-RULES.md for the engineering rules.
 
 ## Requirements
 
-- Node.js 20.11 or newer (development and testing were done on Node 24) and
-  npm.
-- A browser with WebGL2 and the Web Audio API (current Chrome, Edge, or
-  Firefox).
-- An OpenRouter API key (free) for cloud dialogue — optional; without it the
-  scripted fallback answers.
-- A microphone for voice input (push-to-talk works even if auto-listen does
-  not).
+- Node.js 20.11 or newer (development and testing were done on Node 24) and npm.
+- A browser with WebGL2 and the Web Audio API (current Chrome, Edge, or Firefox).
+- An OpenRouter API key (free) for cloud dialogue — optional; without it the scripted fallback answers.
+- A microphone for voice input (push-to-talk works even if auto-listen does not).
 
-Speech recognition (whisper.cpp) and speech synthesis (Piper) install
-themselves into this directory with `npm run setup`; the booth backend starts
-and stops the whisper server automatically. No Python, Docker, or
-system-wide installs are needed.
+Speech recognition (whisper.cpp) and speech synthesis (Piper) install themselves into this directory with `npm run setup`; the booth backend starts and stops the whisper server automatically. No Python, Docker, or system-wide installs are needed.
 
 ## Quick start
 
@@ -41,17 +25,9 @@ cp .env.example .env        # Windows: copy .env.example .env
 npm start
 ```
 
-Open `http://127.0.0.1:8787`, click "Wake the pumpkin", and allow the
-microphone when asked. The booth talks through Piper and listens through
-whisper.cpp — both started from `./services` — and thinks through OpenRouter.
-`npm run dev` gives the same experience with hot reload (open
-`http://localhost:5173` instead).
+Open `http://127.0.0.1:8787`, click "Wake the pumpkin", and allow the microphone when asked. The booth talks through Piper and listens through whisper.cpp — both started from `./services` — and thinks through OpenRouter. `npm run dev` gives the same experience with hot reload (open `http://localhost:5173` instead).
 
-Without an OpenRouter key the booth still starts and talks, but every reply
-comes from the scripted fallback (the diagnostics panel shows "Fallback:
-active"). Add the key and restart to hear the real model. Without
-`npm run setup`, dialogue and subtitles still work and the logs say exactly
-what to run.
+Without an OpenRouter key the booth still starts and talks, but every reply comes from the scripted fallback (the diagnostics panel shows "Fallback: active"). Add the key and restart to hear the real model. Without `npm run setup`, dialogue and subtitles still work and the logs say exactly what to run.
 
 For a production-style run on one port:
 
@@ -60,11 +36,10 @@ npm run build
 npm start
 ```
 
-Open `http://127.0.0.1:8787`. The server serves the built frontend from
-`dist/` and the API on the same origin.
+Open `http://127.0.0.1:8787`. The server serves the built frontend from `dist/` and the API on the same origin.
 
 | Script | Purpose |
-|---|---|
+| --- | --- |
 | `npm run setup` | Download whisper.cpp + Piper into `./services` (one time; `-- --model small.en` to pick a bigger model, `-- --force` to refresh) |
 | `npm run dev` | API + Vite dev server (proxy `/api` -> `127.0.0.1:8787`) |
 | `npm run dev:server` | API server only, with watch mode |
@@ -77,12 +52,10 @@ Open `http://127.0.0.1:8787`. The server serves the built frontend from
 
 ## Local services
 
-The speech services are self-contained: `npm run setup` downloads them into
-`./services/` and `npm start` launches whisper.cpp automatically (Piper runs
-per utterance, no server). Ollama and Kokoro remain supported as alternatives.
+The speech services are self-contained: `npm run setup` downloads them into `./services/` and `npm start` launches whisper.cpp automatically (Piper runs per utterance, no server). Ollama and Kokoro remain supported as alternatives.
 
 | Service | Default URL | Used for | Managed by |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | llm-o-lantern API | `http://127.0.0.1:8787` | API + static frontend (`npm start`) | you |
 | Vite dev server | `http://localhost:5173` | Development UI, proxies `/api` | `npm run dev` |
 | OpenRouter | `https://openrouter.ai/api/v1` | Dialogue (shipped default provider) | cloud |
@@ -101,17 +74,10 @@ npm run setup -- --force      # re-download everything
 
 The installer downloads:
 
-- `services/whisper/` — the latest whisper.cpp Windows binaries plus a
-  `ggml-*.bin` model from Hugging Face
-- `services/piper/` — the Piper Windows build (with `espeak-ng-data`) and the
-  `en_US-lessac-medium` voice in `services/piper/voices/`
+- `services/whisper/` — the latest whisper.cpp Windows binaries plus a `ggml-*.bin` model from Hugging Face
+- `services/piper/` — the Piper Windows build (with `espeak-ng-data`) and the `en_US-lessac-medium` voice in `services/piper/voices/`
 
-`llm-o-lantern.config.json` already points at these paths; the backend starts
-whisper before the HTTP listener and stops it on shutdown. If the services
-are missing, startup logs a warning with the setup command and the booth runs
-with subtitles only. To use a different Piper voice, download the `.onnx` and
-`.onnx.json` files into `services/piper/voices/` and update
-`speechSynthesis.piper.voiceModelPath`.
+`llm-o-lantern.config.json` already points at these paths; the backend starts whisper before the HTTP listener and stops it on shutdown. If the services are missing, startup logs a warning with the setup command and the booth runs with subtitles only. To use a different Piper voice, download the `.onnx` and `.onnx.json` files into `services/piper/voices/` and update `speechSynthesis.piper.voiceModelPath`.
 
 ### OpenRouter (dialogue, shipped default)
 
@@ -121,11 +87,7 @@ Create a key at `https://openrouter.ai/settings/keys`, put it in `.env`:
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-The shipped default model is `nvidia/nemotron-3.5-super-vl:free` (free),
-called through the OpenAI-compatible Chat Completions API (`POST
-https://openrouter.ai/api/v1/chat/completions`). The model is not hardcoded:
-`.env` decides it, so switching models never requires touching code or the
-JSON configuration file.
+The shipped default model is `nvidia/nemotron-3.5-super-vl:free` (free), called through the OpenAI-compatible Chat Completions API (`POST https://openrouter.ai/api/v1/chat/completions`). The model is not hardcoded: `.env` decides it, so switching models never requires touching code or the JSON configuration file.
 
 ```bash
 # .env — any OpenRouter model id works, including ":free" variants
@@ -134,18 +96,9 @@ LLMOL_DIALOGUE_MODEL=nvidia/nemotron-3.5-super-vl:free
 # LLMOL_DIALOGUE_PRESET=openrouter
 ```
 
-Other free OpenRouter models work the same way — set `LLMOL_DIALOGUE_MODEL`
-to any id from `https://openrouter.ai/models?max_price=0`, for example
-`deepseek/deepseek-r1:free`, `meta-llama/llama-3.3-70b-instruct:free`, or
-`qwen/qwen3-8b:free`. The JSON file can also carry
-`dialogue.remote.model` when no environment override is present; if neither
-sets it, the preset's built-in default applies. If a model rejects the
-`json_object` response format, the plugin retries once without it
-automatically.
+Other free OpenRouter models work the same way — set `LLMOL_DIALOGUE_MODEL` to any id from `https://openrouter.ai/models?max_price=0`, for example `deepseek/deepseek-r1:free`, `meta-llama/llama-3.3-70b-instruct:free`, or `qwen/qwen3-8b:free`. The JSON file can also carry `dialogue.remote.model` when no environment override is present; if neither sets it, the preset's built-in default applies. If a model rejects the `json_object` response format, the plugin retries once without it automatically.
 
-To stop sending visitor speech off the machine, set `"plugins": {"dialogue":
-"dialogue.ollama"}` (or `"dialogue.scripted"`) in the config file and use one
-of the local providers below.
+To stop sending visitor speech off the machine, set `"plugins": {"dialogue": "dialogue.ollama"}` (or `"dialogue.scripted"`) in the config file and use one of the local providers below.
 
 ### Ollama (dialogue, optional local alternative)
 
@@ -156,9 +109,7 @@ ollama pull llama3.2
 ollama serve        # if it is not already running as a service
 ```
 
-The app calls the native Ollama API (`POST /api/chat`) on port 11434 with
-model `llama3.2` by default; change either via `dialogue.ollama.model` /
-`dialogue.ollama.baseUrl` or `OLLAMA_MODEL` / `OLLAMA_BASE_URL`.
+The app calls the native Ollama API (`POST /api/chat`) on port 11434 with model `llama3.2` by default; change either via `dialogue.ollama.model` / `dialogue.ollama.baseUrl` or `OLLAMA_MODEL` / `OLLAMA_BASE_URL`.
 
 ### Kokoro-FastAPI (speech synthesis, default)
 
@@ -168,53 +119,24 @@ Quickest start is Docker:
 docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
 ```
 
-With GPU: add `--gpus all` and use `ghcr.io/remsky/kokoro-fastapi-gpu:latest`.
-Alternatively run it natively with uv: clone
-`https://github.com/remsky/Kokoro-FastAPI` and run `start-cpu.ps1` (Windows)
-or `start-cpu.sh` (Linux/macOS). The API listens on `http://127.0.0.1:8880`
-(docs at `/docs`); the app posts to `/v1/audio/speech` with
-`response_format: "wav"`. The voice is `speechSynthesis.kokoro.voice`
-(default `bm_george`).
+With GPU: add `--gpus all` and use `ghcr.io/remsky/kokoro-fastapi-gpu:latest`. Alternatively run it natively with uv: clone `https://github.com/remsky/Kokoro-FastAPI` and run `start-cpu.ps1` (Windows) or `start-cpu.sh` (Linux/macOS). The API listens on `http://127.0.0.1:8880` (docs at `/docs`); the app posts to `/v1/audio/speech` with `response_format: "wav"`. The voice is `speechSynthesis.kokoro.voice` (default `bm_george`).
 
 ### Piper (speech synthesis, shipped default)
 
-Piper is installed by `npm run setup` into `services/piper/` together with the
-`en_US-lessac-medium` voice, and it is the default engine; nothing else to do.
-To use a different voice, download its `.onnx` and `.onnx.json` files into
-`services/piper/voices/` and update `speechSynthesis.piper.voiceModelPath`.
-To use a system-wide Piper instead, point both paths in
-`speechSynthesis.piper` wherever you like (they may be absolute). Manual
-check: `echo "Boo" | .\services\piper\piper.exe --model
-.\services\piper\voices\en_US-lessac-medium.onnx --output_file test.wav
---espeak_data .\services\piper\espeak-ng-data`. If the files are missing the
-booth still runs with subtitles, and the log names `npm run setup`.
+Piper is installed by `npm run setup` into `services/piper/` together with the `en_US-lessac-medium` voice, and it is the default engine; nothing else to do. To use a different voice, download its `.onnx` and `.onnx.json` files into `services/piper/voices/` and update `speechSynthesis.piper.voiceModelPath`. To use a system-wide Piper instead, point both paths in `speechSynthesis.piper` wherever you like (they may be absolute). Manual check: `echo "Boo" | .\services\piper\piper.exe --model .\services\piper\voices\en_US-lessac-medium.onnx --output_file test.wav --espeak_data .\services\piper\espeak-ng-data`. If the files are missing the booth still runs with subtitles, and the log names `npm run setup`.
 
 ### whisper.cpp (speech recognition)
 
-`npm run setup` installs the latest whisper.cpp Windows binaries plus a model
-into `services/whisper/`, and `npm start` launches and supervises the server
-automatically (`speechRecognition.whisperCpp.autoStart`). The app posts
-multipart audio to `http://127.0.0.1:8082/inference`. If a whisper server is
-already running, the backend leaves it alone; if the files are missing, the
-booth runs without voice input and the log names `npm run setup`. Any
-OpenAI-compatible Whisper endpoint also works: set `speechRecognition.engine`
-to `"openai-compatible"` and point `speechRecognition.openaiCompatible.baseUrl`
-at it (optionally with a key via `apiKeyEnv`). To build whisper.cpp yourself
-instead, compile it from https://github.com/ggml-org/whisper.cpp and point
-`speechRecognition.whisperCpp.executablePath` / `modelPath` at your binaries.
+`npm run setup` installs the latest whisper.cpp Windows binaries plus a model into `services/whisper/`, and `npm start` launches and supervises the server automatically (`speechRecognition.whisperCpp.autoStart`). The app posts multipart audio to `http://127.0.0.1:8082/inference`. If a whisper server is already running, the backend leaves it alone; if the files are missing, the booth runs without voice input and the log names `npm run setup`. Any OpenAI-compatible Whisper endpoint also works: set `speechRecognition.engine` to `"openai-compatible"` and point `speechRecognition.openaiCompatible.baseUrl` at it (optionally with a key via `apiKeyEnv`). To build whisper.cpp yourself instead, compile it from https://github.com/ggml-org/whisper.cpp and point `speechRecognition.whisperCpp.executablePath` / `modelPath` at your binaries.
 
 ## Configuration
 
-The configuration file is `llm-o-lantern.config.json` (override the path with
-`LLMOL_CONFIG`). Precedence, lowest to highest: built-in defaults, JSON file,
-`.env`, real environment variables. Copy `.env.example` to `.env` to override
-service URLs and set API keys. Invalid values fail startup with one error
-listing every problem and its exact path.
+The configuration file is `llm-o-lantern.config.json` (override the path with `LLMOL_CONFIG`). Precedence, lowest to highest: built-in defaults, JSON file, `.env`, real environment variables. Copy `.env.example` to `.env` to override service URLs and set API keys. Invalid values fail startup with one error listing every problem and its exact path.
 
 Frequently changed settings:
 
 | Setting | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `server.host` / `server.port` | `127.0.0.1` / `8787` | API bind address |
 | `plugins.*` | see file | Plugin selection per category |
 | `dialogue.remote.preset` | `openrouter` in the shipped file | Provider preset; overridable with `LLMOL_DIALOGUE_PRESET` |
@@ -239,15 +161,11 @@ Frequently changed settings:
 | `characterModel.*` | orange/gold palette | Pumpkin and glow colors |
 | `logging.level` | `info` | `debug`, `info`, `warn`, `error` |
 
-Environment variables (always win over the JSON file): `LLMOL_HOST`,
-`LLMOL_PORT`, `LLMOL_CONFIG`, `LLMOL_LOG_LEVEL`, `LLMOL_DIALOGUE_MODEL`,
-`LLMOL_DIALOGUE_PRESET`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`,
-`OLLAMA_KEEP_ALIVE`, `LLMOL_STT_BASE_URL`, `LLMOL_TTS_BASE_URL`.
+Environment variables (always win over the JSON file): `LLMOL_HOST`, `LLMOL_PORT`, `LLMOL_CONFIG`, `LLMOL_LOG_LEVEL`, `LLMOL_DIALOGUE_MODEL`, `LLMOL_DIALOGUE_PRESET`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_KEEP_ALIVE`, `LLMOL_STT_BASE_URL`, `LLMOL_TTS_BASE_URL`.
 
 ### Remote dialogue providers
 
-OpenRouter is the shipped default (see above). To switch the remote provider,
-change the preset and provide the matching key in the backend environment:
+OpenRouter is the shipped default (see above). To switch the remote provider, change the preset and provide the matching key in the backend environment:
 
 ```jsonc
 "plugins": { "dialogue": "dialogue.remote" },
@@ -261,16 +179,10 @@ change the preset and provide the matching key in the backend environment:
 OPENAI_API_KEY=sk-...
 ```
 
-Remote processing always requires `acknowledgeRemoteProcessing: true` in the
-configuration; selecting a remote provider without it fails startup with a
-message naming the requirement, and the startup log warns that visitor speech
-will leave the machine while a remote provider is active. A missing API key
-does not stop the booth: the provider is marked unavailable (health and
-diagnostics show it) and replies use the scripted fallback until the key is
-set.
+Remote processing always requires `acknowledgeRemoteProcessing: true` in the configuration; selecting a remote provider without it fails startup with a message naming the requirement, and the startup log warns that visitor speech will leave the machine while a remote provider is active. A missing API key does not stop the booth: the provider is marked unavailable (health and diagnostics show it) and replies use the scripted fallback until the key is set.
 
 | Preset | Provider | Default base URL | Default model | API key env |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` | `OPENAI_API_KEY` |
 | `anthropic` | Anthropic | `https://api.anthropic.com/v1` | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` |
 | `deepseek` | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` | `DEEPSEEK_API_KEY` |
@@ -286,42 +198,30 @@ set.
 | `lmstudio` | LM Studio (local) | `http://127.0.0.1:1234/v1` | `local-model` | none |
 | `ollama-openai` | Ollama (OpenAI-compatible) | `http://127.0.0.1:11434/v1` | `llama3.2` | none |
 
-OpenRouter-specific provider errors are surfaced with their HTTP status and
-body message (401 invalid key, 402 insufficient credits, 429 rate limited,
-502 upstream failure); any failed turn falls back to the scripted dialogue
-when `dialogue.scripted.fallbackEnabled` is true.
+OpenRouter-specific provider errors are surfaced with their HTTP status and body message (401 invalid key, 402 insufficient credits, 429 rate limited, 502 upstream failure); any failed turn falls back to the scripted dialogue when `dialogue.scripted.fallbackEnabled` is true.
 
 ## Operator guide
 
-- Start overlay: one click unlocks browser audio and the microphone. In
-  auto-listen mode this is also the microphone permission moment.
-- State badge: the live character state - IDLE, LISTENING, THINKING,
-  PREPARING_SPEECH, SPEAKING, INTERRUPTED, RECOVERING.
-- Subtitles: both sides of the conversation, so the booth works even when the
-  room is too loud to hear it.
-- Error banner: service and backend problems, auto-hiding after 8 seconds; the
-  last 10 errors stay listed in the diagnostics panel.
+- Start overlay: one click unlocks browser audio and the microphone. In auto-listen mode this is also the microphone permission moment.
+- State badge: the live character state - IDLE, LISTENING, THINKING, PREPARING_SPEECH, SPEAKING, INTERRUPTED, RECOVERING.
+- Subtitles: both sides of the conversation, so the booth works even when the room is too loud to hear it.
+- Error banner: service and backend problems, auto-hiding after 8 seconds; the last 10 errors stay listed in the diagnostics panel.
 
-| Control | Key | Action |
-|---|---|---|
-| Listen toggle | `M` | Turn auto-listening on/off |
-| Hold to talk | `T` (hold) | Capture while held, submit on release |
-| Reset visitor | `R` | Stop everything, purge the session, return to IDLE |
-| Diagnostics | `D` | Show/hide the diagnostics panel |
+| Control       | Key        | Action                                             |
+| ------------- | ---------- | -------------------------------------------------- |
+| Listen toggle | `M`        | Turn auto-listening on/off                         |
+| Hold to talk  | `T` (hold) | Capture while held, submit on release              |
+| Reset visitor | `R`        | Stop everything, purge the session, return to IDLE |
+| Diagnostics   | `D`        | Show/hide the diagnostics panel                    |
 
-Diagnostics rows: Backend (health polling), Turn, Providers, Timing source
-(`energy-alignment`, `estimated`, `provider-phonemes`, or `provider-words`),
-Reply total, Sound to lips (turn submission to first audible audio in the
-browser), Dialogue / Synthesis / Timing / Lip sync per-stage latency, Audio
-length, and Fallback (scripted fallback or subtitle degradation used).
+Diagnostics rows: Backend (health polling), Turn, Providers, Timing source (`energy-alignment`, `estimated`, `provider-phonemes`, or `provider-words`), Reply total, Sound to lips (turn submission to first audible audio in the browser), Dialogue / Synthesis / Timing / Lip sync per-stage latency, Audio length, and Fallback (scripted fallback or subtitle degradation used).
 
-Reset between visitors: it clears the session memory server-side and stops any
-audio or animation immediately, with no restart.
+Reset between visitors: it clears the session memory server-side and stops any audio or animation immediately, with no restart.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
-|---|---|---|
+| --- | --- | --- |
 | Overlay says the backend is not reachable | API server not running | `npm run dev:server` (or `npm run dev`); check `http://127.0.0.1:8787/api/health` |
 | Diagnostics Backend shows "offline" | Same as above | Start the API; the banner clears automatically |
 | "Microphone permission was denied" | Browser permission refused | Allow the microphone for the page and reload |
@@ -339,38 +239,17 @@ audio or animation immediately, with no restart.
 
 ## Privacy notes
 
-- Microphone recordings are never persisted: audio lives in an in-memory ring
-  buffer, is sent once to the local transcription endpoint, and is discarded.
-- Conversation memory is per-session and bounded (16 messages / 8000
-  characters), cleared by Reset, purged after 30 minutes idle. No
-  cross-visitor history.
-- Remote dialogue (the shipped OpenRouter default included) requires the
-  explicit `acknowledgeRemoteProcessing` consent in configuration plus a
-  backend-environment API key. Keys never reach the browser, and the logger
-  redacts credential-shaped fields from every entry. With no key or an
-  unavailable provider, replies fall back to the scripted dialogue and no
-  visitor speech is sent anywhere.
-- The public configuration endpoint exposes plugin ids, booth settings, and
-  colors only - never dialogue provider settings or secrets.
+- Microphone recordings are never persisted: audio lives in an in-memory ring buffer, is sent once to the local transcription endpoint, and is discarded.
+- Conversation memory is per-session and bounded (16 messages / 8000 characters), cleared by Reset, purged after 30 minutes idle. No cross-visitor history.
+- Remote dialogue (the shipped OpenRouter default included) requires the explicit `acknowledgeRemoteProcessing` consent in configuration plus a backend-environment API key. Keys never reach the browser, and the logger redacts credential-shaped fields from every entry. With no key or an unavailable provider, replies fall back to the scripted dialogue and no visitor speech is sent anywhere.
+- The public configuration endpoint exposes plugin ids, booth settings, and colors only - never dialogue provider settings or secrets.
 
 ## Development
 
-- Tests: `npm test` (Vitest, Node environment). Coverage spans the plugin
-  lifecycle, configuration, logger redaction, dialogue wire formats, timing
-  and alignment, viseme mapping, facial track interpolation, the state
-  machine, the conversation coordinator, VAD, memory bounds, response
-  processing, server routes over real HTTP, and the full turn pipeline with
-  fake plugins.
-- Live-service smoke tests are opt-in:
-  `INTEGRATION=1 npx vitest run tests/integration` (PowerShell:
-  `$env:INTEGRATION="1"; npx vitest run tests/integration`). They check that
-  Ollama answers on `/api/tags`, that Kokoro returns RIFF WAV from
-  `/v1/audio/speech`, and that the whisper server is reachable.
+- Tests: `npm test` (Vitest, Node environment). Coverage spans the plugin lifecycle, configuration, logger redaction, dialogue wire formats, timing and alignment, viseme mapping, facial track interpolation, the state machine, the conversation coordinator, VAD, memory bounds, response processing, server routes over real HTTP, and the full turn pipeline with fake plugins.
+- Live-service smoke tests are opt-in: `INTEGRATION=1 npx vitest run tests/integration` (PowerShell: `$env:INTEGRATION="1"; npx vitest run tests/integration`). They check that Ollama answers on `/api/tags`, that Kokoro returns RIFF WAV from `/v1/audio/speech`, and that the whisper server is reachable.
 - Standard loop: `npm run typecheck`, then `npm test`, then `npm run build`.
 
 ## License
 
-No license has been chosen for this project. The repository is private and
-unlicensed; all rights are reserved by its authors. It may not be copied,
-distributed, or reused without explicit permission. Add a LICENSE file and
-update this section before any public release.
+No license has been chosen for this project. The repository is private and unlicensed; all rights are reserved by its authors. It may not be copied, distributed, or reused without explicit permission. Add a LICENSE file and update this section before any public release.

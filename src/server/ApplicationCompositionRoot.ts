@@ -1,7 +1,11 @@
 import type { Server } from "node:http";
 import { ApplicationConfiguration, type PluginSelection } from "../core/ApplicationConfiguration";
 import type { ApplicationLogger } from "../core/ApplicationLogger";
-import { PluginManager, PluginRegistry, type SessionMemoryPluginShape } from "../core/PluginManager";
+import {
+    PluginManager,
+    PluginRegistry,
+    type SessionMemoryPluginShape,
+} from "../core/PluginManager";
 import { ConversationSessionManager } from "../application/ConversationSessionManager";
 import { DialogueResponseProcessor } from "../application/DialogueResponseProcessor";
 import { SpeechTimingProcessor } from "../animation/SpeechTimingProcessor";
@@ -18,11 +22,11 @@ import { createHttpServer } from "./server";
 import { LocalSpeechServiceSupervisor } from "./LocalSpeechServiceSupervisor";
 
 export type ApplicationRuntime = {
-  configuration: ApplicationConfiguration;
-  logger: ApplicationLogger;
-  pluginManager: PluginManager;
-  start(): Promise<void>;
-  stop(): Promise<void>;
+    configuration: ApplicationConfiguration;
+    logger: ApplicationLogger;
+    pluginManager: PluginManager;
+    start(): Promise<void>;
+    stop(): Promise<void>;
 };
 
 const SESSION_PURGE_INTERVAL_MS = 60000;
@@ -33,80 +37,107 @@ const SESSION_PURGE_INTERVAL_MS = 60000;
  * plugin manager validates and initializes the selected ones.
  */
 export class ApplicationCompositionRoot {
-  static buildServerRegistry(configuration: ApplicationConfiguration): PluginRegistry {
-    const registry = new PluginRegistry();
-    const values = configuration.value;
-    const environment = configuration.environment;
+    static buildServerRegistry(configuration: ApplicationConfiguration): PluginRegistry {
+        const registry = new PluginRegistry();
+        const values = configuration.value;
+        const environment = configuration.environment;
 
-    registry.add("dialogue.ollama", (logger) => new OllamaDialoguePlugin(values.dialogue.ollama, logger));
-    registry.add("dialogue.remote", (logger) => new RemoteDialoguePlugin(values.dialogue.remote, logger, environment));
-    registry.add("dialogue.scripted", (logger) => new ScriptedDialoguePlugin(logger));
-    registry.add(
-      "personality.haunted-pumpkin",
-      (logger) => new HauntedPumpkinPersonalityPlugin(values.personality, logger)
-    );
-    registry.add(
-      "speech-recognition.local",
-      (logger) => new LocalSpeechRecognitionPlugin(values.speechRecognition, logger, environment)
-    );
-    registry.add(
-      "speech-synthesis.neural",
-      (logger) => new NeuralSpeechSynthesisPlugin(values.speechSynthesis, logger, environment)
-    );
-    registry.add("lipsync.openfacefx", (logger) => new OpenFaceFxLipSyncPlugin(values.lipSync, logger));
-    registry.add("memory.session", (logger) => new SessionMemoryPlugin(values.conversation, logger));
-    return registry;
-  }
+        registry.add(
+            "dialogue.ollama",
+            (logger) => new OllamaDialoguePlugin(values.dialogue.ollama, logger),
+        );
+        registry.add(
+            "dialogue.remote",
+            (logger) => new RemoteDialoguePlugin(values.dialogue.remote, logger, environment),
+        );
+        registry.add("dialogue.scripted", (logger) => new ScriptedDialoguePlugin(logger));
+        registry.add(
+            "personality.haunted-pumpkin",
+            (logger) => new HauntedPumpkinPersonalityPlugin(values.personality, logger),
+        );
+        registry.add(
+            "speech-recognition.local",
+            (logger) =>
+                new LocalSpeechRecognitionPlugin(values.speechRecognition, logger, environment),
+        );
+        registry.add(
+            "speech-synthesis.neural",
+            (logger) =>
+                new NeuralSpeechSynthesisPlugin(values.speechSynthesis, logger, environment),
+        );
+        registry.add(
+            "lipsync.openfacefx",
+            (logger) => new OpenFaceFxLipSyncPlugin(values.lipSync, logger),
+        );
+        registry.add(
+            "memory.session",
+            (logger) => new SessionMemoryPlugin(values.conversation, logger),
+        );
+        return registry;
+    }
 
-  static async compose(
-    configuration: ApplicationConfiguration,
-    logger: ApplicationLogger
-  ): Promise<ApplicationRuntime> {
-    const pluginManager = new PluginManager(serverPluginSelection(configuration.value.plugins), logger);
-    await pluginManager.loadFromRegistry(ApplicationCompositionRoot.buildServerRegistry(configuration));
+    static async compose(
+        configuration: ApplicationConfiguration,
+        logger: ApplicationLogger,
+    ): Promise<ApplicationRuntime> {
+        const pluginManager = new PluginManager(
+            serverPluginSelection(configuration.value.plugins),
+            logger,
+        );
+        await pluginManager.loadFromRegistry(
+            ApplicationCompositionRoot.buildServerRegistry(configuration),
+        );
 
-    const memory = pluginManager.hasCategory("memory")
-      ? pluginManager.getByCategory<SessionMemoryPluginShape>("memory")
-      : null;
-    const sessionManager = new ConversationSessionManager(memory, configuration.value.conversation, logger);
-    const responseProcessor = new DialogueResponseProcessor(configuration, logger);
-    const speechTimingProcessor = new SpeechTimingProcessor(logger);
+        const memory = pluginManager.hasCategory("memory")
+            ? pluginManager.getByCategory<SessionMemoryPluginShape>("memory")
+            : null;
+        const sessionManager = new ConversationSessionManager(
+            memory,
+            configuration.value.conversation,
+            logger,
+        );
+        const responseProcessor = new DialogueResponseProcessor(configuration, logger);
+        const speechTimingProcessor = new SpeechTimingProcessor(logger);
 
-    const routes = new ConversationRoutes({
-      configuration,
-      logger,
-      pluginManager,
-      sessionManager,
-      responseProcessor,
-      speechTimingProcessor
-    });
-    const httpServer = createHttpServer(routes, configuration, logger);
-    const speechServiceSupervisor = new LocalSpeechServiceSupervisor(configuration, logger);
+        const routes = new ConversationRoutes({
+            configuration,
+            logger,
+            pluginManager,
+            sessionManager,
+            responseProcessor,
+            speechTimingProcessor,
+        });
+        const httpServer = createHttpServer(routes, configuration, logger);
+        const speechServiceSupervisor = new LocalSpeechServiceSupervisor(configuration, logger);
 
-    const purgeTimer = setInterval(() => {
-      const purged = sessionManager.purgeIdleSessions();
-      if (purged > 0) {
-        logger.debug("Purged idle sessions", { purged });
-      }
-    }, SESSION_PURGE_INTERVAL_MS);
-    purgeTimer.unref();
+        const purgeTimer = setInterval(() => {
+            const purged = sessionManager.purgeIdleSessions();
+            if (purged > 0) {
+                logger.debug("Purged idle sessions", { purged });
+            }
+        }, SESSION_PURGE_INTERVAL_MS);
+        purgeTimer.unref();
 
-    return {
-      configuration,
-      logger,
-      pluginManager,
-      start: async () => {
-        await speechServiceSupervisor.start();
-        await listen(httpServer, configuration.value.server.host, configuration.value.server.port);
-      },
-      stop: async () => {
-        clearInterval(purgeTimer);
-        await closeServer(httpServer);
-        await speechServiceSupervisor.stop();
-        await pluginManager.shutdown();
-      }
-    };
-  }
+        return {
+            configuration,
+            logger,
+            pluginManager,
+            start: async () => {
+                await speechServiceSupervisor.start();
+                await listen(
+                    httpServer,
+                    configuration.value.server.host,
+                    configuration.value.server.port,
+                );
+            },
+            stop: async () => {
+                clearInterval(purgeTimer);
+                await closeServer(httpServer);
+                await speechServiceSupervisor.stop();
+                await pluginManager.shutdown();
+            },
+        };
+    }
 }
 
 /*
@@ -116,35 +147,35 @@ export class ApplicationCompositionRoot {
  * that also loads "additional" server plugins such as the scripted fallback.
  */
 function serverPluginSelection(selection: PluginSelection): PluginSelection {
-  return {
-    ...selection,
-    character: null,
-    microphone: null,
-    audioPlayback: null
-  };
+    return {
+        ...selection,
+        character: null,
+        microphone: null,
+        audioPlayback: null,
+    };
 }
 
 function listen(server: Server, host: string, port: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.once("error", (error) => {
-      const portInUse = (error as NodeJS.ErrnoException).code === "EADDRINUSE";
-      const message = portInUse
-        ? `Port ${port} is already in use. Is another llm-o-lantern instance already running?`
-        : `Failed to start the HTTP server: ${error.message}`;
-      reject(new Error(message));
+    return new Promise((resolve, reject) => {
+        server.once("error", (error) => {
+            const portInUse = (error as NodeJS.ErrnoException).code === "EADDRINUSE";
+            const message = portInUse
+                ? `Port ${port} is already in use. Is another llm-o-lantern instance already running?`
+                : `Failed to start the HTTP server: ${error.message}`;
+            reject(new Error(message));
+        });
+        server.listen(port, host, () => {
+            resolve();
+        });
     });
-    server.listen(port, host, () => {
-      resolve();
-    });
-  });
 }
 
 function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve) => {
-    if (!server.listening) {
-      resolve();
-      return;
-    }
-    server.close(() => resolve());
-  });
+    return new Promise((resolve) => {
+        if (!server.listening) {
+            resolve();
+            return;
+        }
+        server.close(() => resolve());
+    });
 }

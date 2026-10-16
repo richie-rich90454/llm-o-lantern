@@ -1,120 +1,120 @@
 {
-  "server": {
-    "host": "127.0.0.1",
-    "port": 8787
-  },
-  "plugins": {
-    "dialogue": "dialogue.remote",
-    "personality": "personality.haunted-pumpkin",
-    "speechRecognition": "speech-recognition.local",
-    "speechSynthesis": "speech-synthesis.neural",
-    "lipSync": "lipsync.openfacefx",
-    "memory": "memory.session",
-    "character": "character.pumpkin",
-    "microphone": "microphone.browser",
-    "audioPlayback": "audio.playback-webaudio",
-    "additional": ["dialogue.scripted"]
-  },
-  "dialogue": {
-    "ollama": {
-      "baseUrl": "http://127.0.0.1:11434",
-      "model": "llama3.2",
-      "temperature": 0.8,
-      "maxTokens": 220,
-      "timeoutMs": 25000,
-      "keepAlive": "30m",
-      "structuredOutput": true
+    "server": {
+        "host": "127.0.0.1",
+        "port": 8787
     },
-    "remote": {
-      "preset": "openrouter",
-      "baseUrl": null,
-      "model": null,
-      "apiKeyEnv": null,
-      "temperature": 0.8,
-      "maxTokens": 800,
-      "timeoutMs": 30000,
-      "useJsonResponseFormat": true,
-      "acknowledgeRemoteProcessing": true
+    "plugins": {
+        "dialogue": "dialogue.remote",
+        "personality": "personality.haunted-pumpkin",
+        "speechRecognition": "speech-recognition.local",
+        "speechSynthesis": "speech-synthesis.neural",
+        "lipSync": "lipsync.openfacefx",
+        "memory": "memory.session",
+        "character": "character.pumpkin",
+        "microphone": "microphone.browser",
+        "audioPlayback": "audio.playback-webaudio",
+        "additional": ["dialogue.scripted"]
     },
-    "scripted": {
-      "fallbackEnabled": true
+    "dialogue": {
+        "ollama": {
+            "baseUrl": "http://127.0.0.1:11434",
+            "model": "llama3.2",
+            "temperature": 0.8,
+            "maxTokens": 220,
+            "timeoutMs": 25000,
+            "keepAlive": "30m",
+            "structuredOutput": true
+        },
+        "remote": {
+            "preset": "openrouter",
+            "baseUrl": null,
+            "model": null,
+            "apiKeyEnv": null,
+            "temperature": 0.8,
+            "maxTokens": 800,
+            "timeoutMs": 30000,
+            "useJsonResponseFormat": true,
+            "acknowledgeRemoteProcessing": true
+        },
+        "scripted": {
+            "fallbackEnabled": true
+        }
+    },
+    "personality": {
+        "characterName": "Gourdrick",
+        "secretPhraseDiscovery": true
+    },
+    "speechSynthesis": {
+        "engine": "piper",
+        "timeoutMs": 20000,
+        "speedAdjustments": {
+            "normal": 1,
+            "fast": 1.08,
+            "slow": 0.94,
+            "dramatic": 0.97,
+            "whisper": 1
+        },
+        "kokoro": {
+            "baseUrl": "http://127.0.0.1:8880",
+            "voice": "bm_george",
+            "speed": 1
+        },
+        "piper": {
+            "executablePath": "services/piper/piper.exe",
+            "voiceModelPath": "services/piper/voices/en_US-lessac-medium.onnx"
+        },
+        "openaiCompatible": {
+            "baseUrl": "http://127.0.0.1:8880/v1",
+            "apiKeyEnv": null,
+            "model": "kokoro",
+            "voice": "bm_george"
+        }
+    },
+    "speechRecognition": {
+        "engine": "whisper-cpp",
+        "timeoutMs": 15000,
+        "language": null,
+        "whisperCpp": {
+            "baseUrl": "http://127.0.0.1:8082",
+            "executablePath": "services/whisper/whisper-server.exe",
+            "modelPath": "services/whisper/ggml-base.en.bin",
+            "autoStart": true
+        },
+        "openaiCompatible": {
+            "baseUrl": "http://127.0.0.1:8082/v1",
+            "apiKeyEnv": null,
+            "model": "whisper-1"
+        }
+    },
+    "lipSync": {
+        "coarticulationMs": 60,
+        "minimumHoldMs": 40
+    },
+    "conversation": {
+        "maxHistoryMessages": 16,
+        "maxResponseCharacters": 280,
+        "turnTimeoutMs": 45000,
+        "sessionIdleExpiryMs": 1800000
+    },
+    "booth": {
+        "autoListen": true,
+        "pushToTalkEnabled": true,
+        "subtitlesEnabled": true,
+        "voiceActivity": {
+            "startThreshold": 0.045,
+            "silenceMs": 800,
+            "minSpeechMs": 250,
+            "maxUtteranceMs": 12000,
+            "prerollMs": 400
+        }
+    },
+    "characterModel": {
+        "pumpkinColor": "#d7691f",
+        "stemColor": "#5a4a2f",
+        "glowColor": "#ff9a2a",
+        "glowHotColor": "#ffd66b"
+    },
+    "logging": {
+        "level": "info"
     }
-  },
-  "personality": {
-    "characterName": "Gourdrick",
-    "secretPhraseDiscovery": true
-  },
-  "speechSynthesis": {
-    "engine": "piper",
-    "timeoutMs": 20000,
-    "speedAdjustments": {
-      "normal": 1,
-      "fast": 1.08,
-      "slow": 0.94,
-      "dramatic": 0.97,
-      "whisper": 1
-    },
-    "kokoro": {
-      "baseUrl": "http://127.0.0.1:8880",
-      "voice": "bm_george",
-      "speed": 1
-    },
-    "piper": {
-      "executablePath": "services/piper/piper.exe",
-      "voiceModelPath": "services/piper/voices/en_US-lessac-medium.onnx"
-    },
-    "openaiCompatible": {
-      "baseUrl": "http://127.0.0.1:8880/v1",
-      "apiKeyEnv": null,
-      "model": "kokoro",
-      "voice": "bm_george"
-    }
-  },
-  "speechRecognition": {
-    "engine": "whisper-cpp",
-    "timeoutMs": 15000,
-    "language": null,
-    "whisperCpp": {
-      "baseUrl": "http://127.0.0.1:8082",
-      "executablePath": "services/whisper/whisper-server.exe",
-      "modelPath": "services/whisper/ggml-base.en.bin",
-      "autoStart": true
-    },
-    "openaiCompatible": {
-      "baseUrl": "http://127.0.0.1:8082/v1",
-      "apiKeyEnv": null,
-      "model": "whisper-1"
-    }
-  },
-  "lipSync": {
-    "coarticulationMs": 60,
-    "minimumHoldMs": 40
-  },
-  "conversation": {
-    "maxHistoryMessages": 16,
-    "maxResponseCharacters": 280,
-    "turnTimeoutMs": 45000,
-    "sessionIdleExpiryMs": 1800000
-  },
-  "booth": {
-    "autoListen": true,
-    "pushToTalkEnabled": true,
-    "subtitlesEnabled": true,
-    "voiceActivity": {
-      "startThreshold": 0.045,
-      "silenceMs": 800,
-      "minSpeechMs": 250,
-      "maxUtteranceMs": 12000,
-      "prerollMs": 400
-    }
-  },
-  "characterModel": {
-    "pumpkinColor": "#d7691f",
-    "stemColor": "#5a4a2f",
-    "glowColor": "#ff9a2a",
-    "glowHotColor": "#ffd66b"
-  },
-  "logging": {
-    "level": "info"
-  }
 }

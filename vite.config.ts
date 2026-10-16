@@ -2,18 +2,18 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  server: {
-    port: 5173,
-    proxy: {
-      "/api": "http://127.0.0.1:8787"
-    }
-  },
-  build: {
-    outDir: "dist",
-    target: "es2022"
-  },
-  test: {
-    environment: "node",
-    include: ["tests/**/*.test.ts"]
-  }
+    server: {
+        port: 5173,
+        proxy: {
+            "/api": "http://127.0.0.1:8787",
+        },
+    },
+    build: {
+        outDir: "dist",
+        target: "es2022",
+    },
+    test: {
+        environment: "node",
+        include: ["tests/**/*.test.ts"],
+    },
 });
