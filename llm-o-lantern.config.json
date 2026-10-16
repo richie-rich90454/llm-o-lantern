@@ -28,7 +28,7 @@
     "remote": {
       "preset": "openrouter",
       "baseUrl": null,
-      "model": "nvidia/nemotron-3.5-super-vl",
+      "model": "nvidia/nemotron-3.5-super-vl:free",
       "apiKeyEnv": null,
       "temperature": 0.8,
       "maxTokens": 220,
