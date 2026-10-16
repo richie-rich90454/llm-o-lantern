@@ -38,6 +38,11 @@
         },
         "scripted": {
             "fallbackEnabled": true
+        },
+        "failover": {
+            "chain": [],
+            "instances": [],
+            "rateLimitCooldownMs": 900000
         }
     },
     "personality": {

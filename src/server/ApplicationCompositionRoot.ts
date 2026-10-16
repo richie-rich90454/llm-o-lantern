@@ -51,6 +51,31 @@ export class ApplicationCompositionRoot {
             (logger) => new RemoteDialoguePlugin(values.dialogue.remote, logger, environment),
         );
         registry.add("dialogue.scripted", (logger) => new ScriptedDialoguePlugin(logger));
+        // Extra remote provider instances (for example a Groq free-tier key
+        // alongside OpenRouter) are registered as dialogue.remote.<preset> so
+        // the failover chain can reach other vendors or accounts.
+        for (const instance of values.dialogue.failover.instances) {
+            const instanceId = `dialogue.remote.${instance.preset}`;
+            if (registry.has(instanceId)) {
+                continue;
+            }
+            registry.add(
+                instanceId,
+                (logger) =>
+                    new RemoteDialoguePlugin(
+                        {
+                            ...values.dialogue.remote,
+                            preset: instance.preset,
+                            model: instance.model,
+                            apiKeyEnv: instance.apiKeyEnv,
+                            baseUrl: instance.baseUrl,
+                        },
+                        logger,
+                        environment,
+                        instanceId,
+                    ),
+            );
+        }
         registry.add(
             "personality.haunted-pumpkin",
             (logger) => new HauntedPumpkinPersonalityPlugin(values.personality, logger),
@@ -80,8 +105,14 @@ export class ApplicationCompositionRoot {
         configuration: ApplicationConfiguration,
         logger: ApplicationLogger,
     ): Promise<ApplicationRuntime> {
+        const failoverIds = [
+            ...configuration.value.dialogue.failover.chain,
+            ...configuration.value.dialogue.failover.instances.map(
+                (instance) => `dialogue.remote.${instance.preset}`,
+            ),
+        ];
         const pluginManager = new PluginManager(
-            serverPluginSelection(configuration.value.plugins),
+            serverPluginSelection(configuration.value.plugins, failoverIds),
             logger,
         );
         await pluginManager.loadFromRegistry(
@@ -145,10 +176,19 @@ export class ApplicationCompositionRoot {
  * microphone, audio playback) that the server registry has no factories for.
  * Clearing those selections keeps the unfiltered load, which is the only mode
  * that also loads "additional" server plugins such as the scripted fallback.
+ * Failover chain and instance ids are appended to "additional" so configuring
+ * the chain is all an operator has to do.
  */
-function serverPluginSelection(selection: PluginSelection): PluginSelection {
+function serverPluginSelection(selection: PluginSelection, failoverIds: string[]): PluginSelection {
+    const additional = [...selection.additional];
+    for (const id of failoverIds) {
+        if (!additional.includes(id)) {
+            additional.push(id);
+        }
+    }
     return {
         ...selection,
+        additional,
         character: null,
         microphone: null,
         audioPlayback: null,

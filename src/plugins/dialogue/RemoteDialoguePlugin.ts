@@ -310,7 +310,7 @@ function buildConversationMessages(request: DialogueRequest): ChatMessage[] {
 }
 
 export class RemoteDialoguePlugin {
-    readonly id = "dialogue.remote";
+    readonly id: string;
     readonly version = "1.0.0";
     readonly category = "dialogue";
 
@@ -323,10 +323,12 @@ export class RemoteDialoguePlugin {
         config: DialogueRemoteConfig,
         logger: ApplicationLogger,
         environment: Record<string, string | undefined>,
+        instanceId = "dialogue.remote",
     ) {
         this.config = config;
         this.logger = logger;
         this.environment = environment;
+        this.id = instanceId;
     }
 
     async initialize(): Promise<void> {

@@ -45,6 +45,31 @@ export type DialogueScriptedConfig = {
     fallbackEnabled: boolean;
 };
 
+export type RemoteInstanceConfig = {
+    preset: string;
+    model: string | null;
+    apiKeyEnv: string | null;
+    baseUrl: string | null;
+};
+
+export type DialogueFailoverConfig = {
+    /**
+     * Dialogue plugin ids (e.g. "dialogue.remote.groq", "dialogue.ollama",
+     * "dialogue.scripted") tried in order when the primary provider fails,
+     * is rate-limited, or is cooling down. Chain ids are loaded
+     * automatically.
+     */
+    chain: string[];
+    /**
+     * Extra remote provider instances registered as
+     * "dialogue.remote.<preset>" so the chain can reach other vendors or
+     * accounts (for example a Groq free-tier key next to OpenRouter).
+     */
+    instances: RemoteInstanceConfig[];
+    /** How long a quota-limited provider is skipped before being tried again. */
+    rateLimitCooldownMs: number;
+};
+
 export type SpeechSynthesisConfig = {
     engine: "kokoro" | "piper" | "openai-compatible";
     timeoutMs: number;
@@ -108,6 +133,7 @@ export type AppConfig = {
         ollama: DialogueOllamaConfig;
         remote: DialogueRemoteConfig;
         scripted: DialogueScriptedConfig;
+        failover: DialogueFailoverConfig;
     };
     personality: PersonalityConfig;
     speechSynthesis: SpeechSynthesisConfig;
@@ -319,6 +345,39 @@ function readStringArray(
     return value as string[];
 }
 
+function readRemoteInstances(source: RawRecord, problems: string[]): RemoteInstanceConfig[] {
+    const value = source.instances;
+    if (value === undefined) {
+        return [];
+    }
+    if (!Array.isArray(value)) {
+        problems.push("dialogue.failover.instances must be an array of provider objects");
+        return [];
+    }
+    const instances: RemoteInstanceConfig[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+        const entry = value[index];
+        const path = `dialogue.failover.instances[${index}]`;
+        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+            problems.push(`${path} must be an object with at least a preset`);
+            continue;
+        }
+        const record = entry as RawRecord;
+        const preset = record.preset;
+        if (typeof preset !== "string" || preset.trim() === "") {
+            problems.push(`${path}.preset must be a non-empty string`);
+            continue;
+        }
+        instances.push({
+            preset,
+            model: readStringOrNull(record, "model", `${path}.model`, problems, null),
+            apiKeyEnv: readStringOrNull(record, "apiKeyEnv", `${path}.apiKeyEnv`, problems, null),
+            baseUrl: readStringOrNull(record, "baseUrl", `${path}.baseUrl`, problems, null),
+        });
+    }
+    return instances;
+}
+
 function readSpeedAdjustments(
     source: RawRecord,
     path: string,
@@ -414,6 +473,7 @@ function readConfig(root: RawRecord, problems: string[]): AppConfig {
     const ollama = asRecord(dialogue.ollama, problems, "dialogue.ollama");
     const remote = asRecord(dialogue.remote, problems, "dialogue.remote");
     const scripted = asRecord(dialogue.scripted, problems, "dialogue.scripted");
+    const failover = asRecord(dialogue.failover, problems, "dialogue.failover");
     const personality = asRecord(root.personality, problems, "personality");
     const speechSynthesis = asRecord(root.speechSynthesis, problems, "speechSynthesis");
     const kokoro = asRecord(speechSynthesis.kokoro, problems, "speechSynthesis.kokoro");
@@ -565,6 +625,19 @@ function readConfig(root: RawRecord, problems: string[]): AppConfig {
                     "dialogue.scripted.fallbackEnabled",
                     problems,
                     true,
+                ),
+            },
+            failover: {
+                chain: readStringArray(failover, "chain", "dialogue.failover.chain", problems),
+                instances: readRemoteInstances(failover, problems),
+                rateLimitCooldownMs: readNumber(
+                    failover,
+                    "rateLimitCooldownMs",
+                    "dialogue.failover.rateLimitCooldownMs",
+                    problems,
+                    900000,
+                    10000,
+                    86400000,
                 ),
             },
         },

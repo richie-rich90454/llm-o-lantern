@@ -91,6 +91,8 @@ The browser uses this variant for every spoken turn. The route emits one `chunk`
 4. The client (`ConversationCoordinator`) enqueues chunk audio in `AudioPlaybackController`'s queue, prepares each chunk's facial track when that chunk starts (via `onChunkStarted`), and accumulates subtitles as words fly in. Chunks play seamlessly back to back; the turn completes when the queue drains. Plugins without streaming fall back to a single chunk produced by the classic pipeline, so the client handles one shape.
 5. Memory, counters, latency sums, and stale-turn handling match the classic route; the `done` event carries the same diagnostics the browser shows.
 
+When the primary provider errors or is quota/rate-limited, the route walks `dialogue.failover.chain` (extra provider instances register automatically as `dialogue.remote.<preset>` from `dialogue.failover.instances`) before falling back to the scripted line, and quota-limited providers enter a cooldown - until the next UTC midnight for daily caps, otherwise `dialogue.failover.rateLimitCooldownMs` - during which they are skipped without any request being sent.
+
 ## 6. Speech pipeline end to end
 
 ```

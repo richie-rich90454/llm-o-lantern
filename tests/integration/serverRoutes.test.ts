@@ -169,11 +169,16 @@ async function startTestBooth(options?: {
  * in small pieces so the route can speak sentence by sentence.
  */
 class FakeStreamingDialoguePlugin {
-    readonly id = "dialogue.streaming";
+    readonly id: string;
     readonly version = "1.0.0";
     readonly category = "dialogue";
 
-    constructor(private readonly jsonText: string) {}
+    constructor(
+        private readonly jsonText: string,
+        id = "dialogue.streaming",
+    ) {
+        this.id = id;
+    }
 
     async initialize(): Promise<void> {}
 
@@ -267,21 +272,60 @@ class FakeSilentStreamingDialoguePlugin {
     }
 }
 
+/** Rejects everything the way an exhausted OpenRouter free tier does. */
+class FakeQuotaStreamingDialoguePlugin {
+    readonly id = "dialogue.quota";
+    readonly version = "1.0.0";
+    readonly category = "dialogue";
+    streamCalls = 0;
+
+    async initialize(): Promise<void> {}
+
+    async shutdown(): Promise<void> {}
+
+    async generateResponse(): Promise<DialogueResponse> {
+        throw new Error(
+            'Remote provider "Quota" responded with HTTP 429: Rate limit exceeded: free-models-per-day',
+        );
+    }
+
+    async *streamResponseText(): AsyncGenerator<string> {
+        this.streamCalls += 1;
+        throw new Error(
+            'Remote provider "Quota" responded with HTTP 429: Rate limit exceeded: free-models-per-day',
+        );
+    }
+}
+
 async function startStreamingServer(
     dialoguePlugin: PluginLike,
     streamTiming: { noDataMs?: number; patienceMs?: number },
-    withScripted = false,
+    options?: {
+        withScripted?: boolean;
+        extras?: { id: string; plugin: PluginLike }[];
+        chain?: string[];
+    },
 ): Promise<{ server: Server; port: number }> {
     const { logger } = createCapturingLogger();
     const configuration = await ApplicationConfiguration.load({ environment: {} });
+    if (options?.chain !== undefined) {
+        configuration.value.dialogue.failover.chain = options.chain;
+    }
     const registry = new PluginRegistry();
     registry.add(dialoguePlugin.id, () => dialoguePlugin);
     registry.add("personality.fake", () => new FakePersonalityPlugin());
     registry.add("speech-synthesis.fake", () => new FakeSpeechSynthesisPlugin());
     registry.add("lipsync.fake", () => new FakeLipSyncPlugin());
-    if (withScripted) {
+    if (options?.withScripted === true) {
         registry.add("dialogue.scripted", (childLogger) => new ScriptedDialoguePlugin(childLogger));
     }
+    for (const extra of options?.extras ?? []) {
+        registry.add(extra.id, () => extra.plugin);
+    }
+    const additional = [
+        ...(options?.withScripted === true ? ["dialogue.scripted"] : []),
+        ...(options?.extras ?? []).map((extra) => extra.id),
+    ];
     const selection: PluginSelection = {
         dialogue: dialoguePlugin.id,
         personality: "personality.fake",
@@ -292,7 +336,7 @@ async function startStreamingServer(
         character: null,
         microphone: null,
         audioPlayback: null,
-        additional: withScripted ? ["dialogue.scripted"] : [],
+        additional,
     };
     const pluginManager = new PluginManager(selection, logger);
     await pluginManager.loadFromRegistry(registry);
@@ -525,6 +569,21 @@ describe("routing and static files", () => {
 });
 
 describe("ApplicationCompositionRoot", () => {
+    it("registers failover instances and auto-loads the configured chain", async () => {
+        const { logger } = createCapturingLogger("error");
+        const configuration = await ApplicationConfiguration.load({ environment: {} });
+        configuration.value.dialogue.failover.instances = [
+            { preset: "llamacpp", model: null, apiKeyEnv: null, baseUrl: null },
+        ];
+        configuration.value.dialogue.failover.chain = ["dialogue.remote.llamacpp"];
+        const runtime = await ApplicationCompositionRoot.compose(configuration, logger);
+        try {
+            expect(runtime.pluginManager.hasPlugin("dialogue.remote.llamacpp")).toBe(true);
+        } finally {
+            await runtime.stop();
+        }
+    });
+
     it("composes the shipped configuration into the complete server plugin graph", async () => {
         const { logger } = createCapturingLogger("error");
         const configuration = await ApplicationConfiguration.load({ environment: {} });
@@ -545,6 +604,88 @@ describe("ApplicationCompositionRoot", () => {
 });
 
 describe("streamed turns (/api/conversation/turn-stream)", () => {
+    it("fails over to the next provider in the chain on quota errors, without retrying the limited one", async () => {
+        const quota = new FakeQuotaStreamingDialoguePlugin();
+        const backup = new FakeStreamingDialoguePlugin(
+            JSON.stringify({
+                text: "The backup brain answers just fine.",
+                emotion: "amused",
+                delivery: "normal",
+            }),
+            "dialogue.backup",
+        );
+        const server = await startStreamingServer(
+            quota,
+            { noDataMs: 500, patienceMs: 5000 },
+            { extras: [{ id: "dialogue.backup", plugin: backup }], chain: ["dialogue.backup"] },
+        );
+        try {
+            const response = await fetch(
+                `http://127.0.0.1:${server.port}/api/conversation/turn-stream`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        sessionId: "quota-test-1ab",
+                        turnId: 1,
+                        text: "hello",
+                    }),
+                },
+            );
+            const lines = await readNdjson(response);
+            const chunks = lines.filter((line) => line.type === "chunk");
+            const done = lines.find((line) => line.type === "done");
+
+            expect(quota.streamCalls).toBe(1);
+            expect(chunks.length).toBeGreaterThanOrEqual(1);
+            expect(String(chunks[0].text)).toContain("backup brain");
+            expect(done?.dialogueFallback).toBe(true);
+            expect((done?.providers as { dialogue: string }).dialogue).toBe("dialogue.backup");
+        } finally {
+            await new Promise<void>((resolve) => server.server.close(() => resolve()));
+        }
+    });
+
+    it("keeps a quota-limited provider in cooldown on later turns", async () => {
+        const quota = new FakeQuotaStreamingDialoguePlugin();
+        const backup = new FakeStreamingDialoguePlugin(
+            JSON.stringify({
+                text: "Still here, still witty.",
+                emotion: "amused",
+                delivery: "normal",
+            }),
+            "dialogue.backup",
+        );
+        const server = await startStreamingServer(
+            quota,
+            { noDataMs: 500, patienceMs: 5000 },
+            { extras: [{ id: "dialogue.backup", plugin: backup }], chain: ["dialogue.backup"] },
+        );
+        try {
+            for (const turnId of [1, 2]) {
+                const response = await fetch(
+                    `http://127.0.0.1:${server.port}/api/conversation/turn-stream`,
+                    {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            sessionId: "quota-cooldown-1",
+                            turnId,
+                            text: "hello again",
+                        }),
+                    },
+                );
+                const lines = await readNdjson(response);
+                const done = lines.find((line) => line.type === "done");
+                expect(done?.dialogueFallback).toBe(true);
+            }
+            // One quota hit on turn 1; the cooldown skips the provider after.
+            expect(quota.streamCalls).toBe(1);
+        } finally {
+            await new Promise<void>((resolve) => server.server.close(() => resolve()));
+        }
+    });
+
     it("keeps waiting while a thinking model sends activity but no text yet", async () => {
         const dripping = new FakeDrippingStreamingDialoguePlugin(
             JSON.stringify({
@@ -587,7 +728,7 @@ describe("streamed turns (/api/conversation/turn-stream)", () => {
         const server = await startStreamingServer(
             silent,
             { noDataMs: 120, patienceMs: 5000 },
-            true,
+            { withScripted: true },
         );
         try {
             const response = await fetch(

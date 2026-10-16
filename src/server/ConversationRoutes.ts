@@ -144,6 +144,7 @@ export class ConversationRoutes {
     private readonly timingSourceCounts = new Map<string, number>();
     private readonly recentErrors: RecentError[] = [];
     private healthCache: { timestamp: number; payload: unknown } | null = null;
+    private primaryCooldownUntil = 0;
 
     constructor(dependencies: ConversationRoutesDependencies) {
         this.configuration = dependencies.configuration;
@@ -276,6 +277,67 @@ export class ConversationRoutes {
             });
             return null;
         }
+    }
+
+    private isQuotaError(message: string): boolean {
+        return /\b429\b|\b402\b|rate limit|insufficient credits|free-models-per-day/i.test(message);
+    }
+
+    /**
+     * Skips a quota-limited provider so the booth never wastes attempts on it.
+     * Daily caps cool down until the next UTC midnight; other rate limits use
+     * the configured cooldown.
+     */
+    private enterPrimaryCooldown(message: string): void {
+        const perDay = /per-day|free-models-per-day/i.test(message);
+        const cooldownMs = perDay
+            ? msUntilNextUtcMidnight() + 60000
+            : this.configuration.value.dialogue.failover.rateLimitCooldownMs;
+        this.primaryCooldownUntil = Date.now() + cooldownMs;
+        this.logger.warn("Dialogue provider hit a quota limit; cooling down", {
+            untilIso: new Date(this.primaryCooldownUntil).toISOString(),
+            reason: message.slice(0, 200),
+        });
+    }
+
+    /**
+     * Walks the configured failover chain (dialogue plugin ids from
+     * plugins.additional) in order and returns the first usable reply.
+     */
+    private async tryFallbackChain(
+        personality: PersonalityPluginShape,
+        turn: { sessionId: string; turnId: number; text: string },
+        combined: AbortSignal,
+    ): Promise<DialogueResponse | null> {
+        for (const id of this.configuration.value.dialogue.failover.chain) {
+            if (!this.pluginManager.hasPlugin(id)) {
+                this.logger.warn("Failover chain lists a plugin that is not loaded; skipping", {
+                    id,
+                });
+                continue;
+            }
+            try {
+                const request = new DialogueRequest({
+                    sessionId: turn.sessionId,
+                    turnId: turn.turnId,
+                    text: turn.text,
+                    history: this.sessionManager.getHistory(turn.sessionId),
+                    instructions: personality.buildInstructions(),
+                    allowedEmotions: personality.getAllowedEmotions(),
+                    allowedDeliveries: personality.getAllowedDeliveries(),
+                    maxResponseCharacters: personality.getResponseCharacterLimit(),
+                });
+                return await this.pluginManager
+                    .getPlugin<DialoguePluginShape>(id)
+                    .generateResponse(request, combined);
+            } catch (error) {
+                this.logger.warn("Failover provider failed", {
+                    id,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+        return null;
     }
 
     /**
@@ -693,7 +755,10 @@ export class ConversationRoutes {
                 finalEmotion = secret.emotion;
                 finalDelivery = secret.delivery;
                 await emitChunk(secret.text);
-            } else if (typeof dialogue.streamResponseText === "function") {
+            } else if (
+                Date.now() >= this.primaryCooldownUntil &&
+                typeof dialogue.streamResponseText === "function"
+            ) {
                 const dialogueStart = Date.now();
                 const streamResponseText = dialogue.streamResponseText.bind(dialogue);
                 let fullRaw = "";
@@ -709,7 +774,7 @@ export class ConversationRoutes {
                 let lastErrorMessage: string | null = null;
 
                 const attemptStream = async (): Promise<
-                    "ok" | "retry" | "fallback" | "deadline" | "aborted"
+                    "ok" | "retry" | "fallback" | "deadline" | "quota" | "aborted"
                 > => {
                     const firstChunkAbort = new AbortController();
                     const streamSignal = AbortSignal.any([combined, firstChunkAbort.signal]);
@@ -780,6 +845,9 @@ export class ConversationRoutes {
                             );
                             return "ok";
                         }
+                        if (this.isQuotaError(message)) {
+                            return "quota";
+                        }
                         const providerFailure =
                             message.includes("HTTP") ||
                             message.includes("unreachable") ||
@@ -792,6 +860,11 @@ export class ConversationRoutes {
                 };
 
                 let outcome = await attemptStream();
+                if (outcome === "quota") {
+                    // Quota limits never clear in the next second; retrying
+                    // would just burn another request against the cap.
+                    this.enterPrimaryCooldown(lastErrorMessage ?? "quota limit");
+                }
                 if (outcome === "retry") {
                     // Transient provider errors (502s, resets) are common with
                     // free endpoints; give the provider a breath, then retry.
@@ -802,6 +875,9 @@ export class ConversationRoutes {
                     deadlineFired = false;
                     firstSentenceReceived = false;
                     outcome = await attemptStream();
+                    if (outcome === "quota") {
+                        this.enterPrimaryCooldown(lastErrorMessage ?? "quota limit");
+                    }
                 }
                 latency.dialogueMs = Date.now() - dialogueStart;
                 if (outcome === "aborted") {
@@ -811,24 +887,52 @@ export class ConversationRoutes {
                 const streamedCleanly = outcome === "ok";
                 if (!streamedCleanly && chunkIndex === 0) {
                     this.logger.info(
-                        "Dialogue stream produced no clean reply; answering with the scripted line",
+                        "Dialogue stream produced no clean reply; trying fallback providers",
                         {
                             reason:
                                 outcome === "deadline"
                                     ? "no usable text within the stream watchdog window"
-                                    : (lastErrorMessage ?? "unknown provider failure"),
+                                    : outcome === "quota"
+                                      ? "provider quota or rate limit reached"
+                                      : (lastErrorMessage ?? "unknown provider failure"),
                         },
                     );
-                    const fallbackWorked = await runScriptedFallback();
-                    if (!fallbackWorked) {
-                        writeEvent({
-                            type: "error",
-                            code: "dialogue-unavailable",
-                            message:
-                                "The dialogue provider produced no reply and no scripted fallback is available",
-                        });
-                        response.end();
-                        return;
+                    const chained = await this.tryFallbackChain(
+                        personality,
+                        { sessionId, turnId, text },
+                        combined,
+                    );
+                    let answered = false;
+                    if (chained !== null) {
+                        dialogueFallback = true;
+                        providerDialogue = chained.providerId;
+                        try {
+                            const processed = this.responseProcessor.process(chained, personality);
+                            finalEmotion = processed.emotion;
+                            finalDelivery = processed.delivery;
+                            await emitChunk(processed.text);
+                            answered = true;
+                        } catch (error) {
+                            this.logger.warn(
+                                "Failover reply was rejected; using the scripted line",
+                                {
+                                    error: error instanceof Error ? error.message : String(error),
+                                },
+                            );
+                        }
+                    }
+                    if (!answered) {
+                        const fallbackWorked = await runScriptedFallback();
+                        if (!fallbackWorked) {
+                            writeEvent({
+                                type: "error",
+                                code: "dialogue-unavailable",
+                                message:
+                                    "The dialogue provider produced no reply and no fallback is available",
+                            });
+                            response.end();
+                            return;
+                        }
                     }
                 }
 
@@ -866,51 +970,74 @@ export class ConversationRoutes {
                     }
                 }
             } else {
-                // Provider without streaming support: classic single-chunk turn.
+                // Provider without streaming support (or primary in cooldown):
+                // classic single-chunk turn with the failover chain.
                 const dialogueStart = Date.now();
-                let raw: DialogueResponse;
-                try {
-                    const dialogueRequest = new DialogueRequest({
-                        sessionId,
-                        turnId,
-                        text,
-                        history: this.sessionManager.getHistory(sessionId),
-                        instructions: personality.buildInstructions(),
-                        allowedEmotions: personality.getAllowedEmotions(),
-                        allowedDeliveries: personality.getAllowedDeliveries(),
-                        maxResponseCharacters: maxCharacters,
-                    });
-                    raw = await dialogue.generateResponse(dialogueRequest, combined);
-                } catch (error) {
-                    const message = error instanceof Error ? error.message : String(error);
-                    this.logger.warn("Dialogue provider failed; scripted fallback used", {
-                        error: message,
-                    });
-                    if (!(await runScriptedFallback())) {
+                let raw: DialogueResponse | null = null;
+                let providerWasFallback = false;
+                if (Date.now() < this.primaryCooldownUntil) {
+                    this.logger.debug(
+                        "Primary dialogue provider is cooling down; using fallback providers",
+                    );
+                } else {
+                    try {
+                        const dialogueRequest = new DialogueRequest({
+                            sessionId,
+                            turnId,
+                            text,
+                            history: this.sessionManager.getHistory(sessionId),
+                            instructions: personality.buildInstructions(),
+                            allowedEmotions: personality.getAllowedEmotions(),
+                            allowedDeliveries: personality.getAllowedDeliveries(),
+                            maxResponseCharacters: maxCharacters,
+                        });
+                        raw = await dialogue.generateResponse(dialogueRequest, combined);
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        if (this.isQuotaError(message)) {
+                            this.enterPrimaryCooldown(message);
+                        }
+                        this.logger.warn("Dialogue provider failed; trying fallback providers", {
+                            error: message,
+                        });
+                    }
+                }
+                if (raw === null) {
+                    const chained = await this.tryFallbackChain(
+                        personality,
+                        { sessionId, turnId, text },
+                        combined,
+                    );
+                    if (chained !== null) {
+                        raw = chained;
+                        providerWasFallback = true;
+                    } else if (!(await runScriptedFallback())) {
                         writeEvent({
                             type: "error",
                             code: "dialogue-unavailable",
-                            message: `Dialogue provider failed: ${message}`,
+                            message:
+                                "The dialogue provider produced no reply and no fallback is available",
                         });
                         response.end();
                         return;
                     }
-                    raw = new DialogueResponse("", "neutral", "normal", providerDialogue);
-                } finally {
-                    latency.dialogueMs = Date.now() - dialogueStart;
                 }
-                if (!dialogueFallback) {
+                latency.dialogueMs = Date.now() - dialogueStart;
+                if (raw !== null) {
                     try {
                         const processed = this.responseProcessor.process(raw, personality);
                         finalEmotion = processed.emotion;
                         finalDelivery = processed.delivery;
                         providerDialogue = raw.providerId;
+                        if (providerWasFallback) {
+                            dialogueFallback = true;
+                        }
                         await emitChunk(processed.text);
                     } catch (error) {
-                        this.logger.warn("Dialogue reply was rejected; scripted fallback used", {
+                        this.logger.warn("Dialogue reply was rejected; using the scripted line", {
                             error: error instanceof Error ? error.message : String(error),
                         });
-                        if (!(await runScriptedFallback()) && chunkIndex === 0) {
+                        if (chunkIndex === 0 && !(await runScriptedFallback())) {
                             writeEvent({
                                 type: "error",
                                 code: "processing-failed",
@@ -1300,4 +1427,10 @@ async function* captureDeltas(
         onDelta(delta);
         yield delta;
     }
+}
+
+function msUntilNextUtcMidnight(): number {
+    const now = new Date();
+    const nextMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+    return nextMidnight - now.getTime();
 }

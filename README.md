@@ -200,6 +200,31 @@ Remote processing always requires `acknowledgeRemoteProcessing: true` in the con
 
 OpenRouter-specific provider errors are surfaced with their HTTP status and body message (401 invalid key, 402 insufficient credits, 429 rate limited, 502 upstream failure); any failed turn falls back to the scripted dialogue when `dialogue.scripted.fallbackEnabled` is true.
 
+### Rate limits, cooldowns, and failover chains
+
+OpenRouter's free tier allows **50 free-model requests per day per account, shared across every `:free` model** — switching between free models does not reset it. A one-time $10 credit purchase raises the cap to 1000/day. The booth is built to survive the cap either way:
+
+- A quota or rate-limit error puts the primary provider into **cooldown** (until the next UTC midnight for daily caps, otherwise `dialogue.failover.rateLimitCooldownMs`). While cooling down it is skipped instantly, so no requests are wasted and the logs stay quiet.
+- `dialogue.failover.chain` lists dialogue plugin ids tried in order before the scripted line. Chain entries are loaded automatically; no `plugins.additional` edits needed.
+
+To add a second provider (for example Groq's free tier) next to OpenRouter:
+
+```jsonc
+"dialogue": {
+  "failover": {
+    "chain": ["dialogue.remote.groq", "dialogue.ollama"],
+    "instances": [{ "preset": "groq", "model": "llama-3.3-70b-versatile" }]
+  }
+}
+```
+
+```bash
+# .env — the instance id is dialogue.remote.<preset>
+GROQ_API_KEY=gsk_...
+```
+
+Any preset from the table above works as an instance. `dialogue.ollama` is always available as a chain entry once Ollama runs on the booth machine. When the chain is empty and the primary is cooling down, the scripted fallback keeps the character in character until the quota resets.
+
 ## Operator guide
 
 - Start overlay: one click unlocks browser audio and the microphone. In auto-listen mode this is also the microphone permission moment.
