@@ -101,6 +101,24 @@ describe("DialogueResponseProcessor", () => {
         expect(result.delivery).toBe("normal");
     });
 
+    it("rejects internal reasoning instead of speaking it", () => {
+        const reasoning = raw(
+            'The user is asking: "What is the similarity between you and a typical ream and some expression?" This is a bit ambiguous/wordplay-heavy. Let\'s parse it. Gourdrick is a jack-o\'-lantern (pumpkin). A "ream" could mean several things.',
+        );
+        expect(() => processor.process(reasoning, personality)).toThrow(/internal reasoning/);
+    });
+
+    it("does not flag legitimate replies that merely start with advice", () => {
+        const result = processor.process(
+            raw(
+                "I should warn you: my candle burns at both ends tonight. Choose your questions wisely.",
+            ),
+            personality,
+        );
+
+        expect(result.text).toContain("I should warn you");
+    });
+
     it("unescapes quoted text while salvaging a cut-off reply", () => {
         const truncated = raw('{"text": "He said \\"boo\\" and meant it", "emotion": "amused"');
         const result = processor.process(truncated, personality);

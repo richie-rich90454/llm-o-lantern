@@ -21,8 +21,13 @@ import { decodeWav } from "../data/WavAudio";
 import type { FacialAnimationTrack, FacialAnimationTrackJson } from "../data/FacialAnimationTrack";
 import type { SpeechTiming } from "../data/SpeechTiming";
 import type { SpeechResult } from "../data/SpeechResult";
-import type { ConversationSessionManager } from "../application/ConversationSessionManager";
+import type {
+    ConversationSessionManager,
+    TurnHandle,
+} from "../application/ConversationSessionManager";
 import type { DialogueResponseProcessor } from "../application/DialogueResponseProcessor";
+import { looksLikeInternalReasoning } from "../application/DialogueResponseProcessor";
+import { SpokenTextStreamer } from "../application/SpokenTextStreamer";
 import type { SpeechTimingProcessor } from "../animation/SpeechTimingProcessor";
 
 export type TurnResponsePayload = {
@@ -45,6 +50,49 @@ export type TurnResponsePayload = {
         totalMs: number;
     };
     providers: { dialogue: string; speech: string };
+};
+
+/** NDJSON events emitted by POST /api/conversation/turn-stream. */
+export type TurnStreamEvent =
+    | {
+          type: "chunk";
+          index: number;
+          text: string;
+          audioWavBase64: string | null;
+          sampleRate: number | null;
+          durationSeconds: number | null;
+          track: FacialAnimationTrackJson | null;
+          timingSource: string | null;
+      }
+    | {
+          type: "done";
+          turnId: number;
+          text: string;
+          emotion: string;
+          delivery: string;
+          timingSource: string | null;
+          degraded: boolean;
+          dialogueFallback: boolean;
+          providers: { dialogue: string; speech: string };
+          latency: {
+              dialogueMs: number;
+              synthesisMs: number;
+              timingMs: number;
+              lipSyncMs: number;
+              totalMs: number;
+              firstChunkMs: number;
+          };
+      }
+    | { type: "stale"; turnId: number }
+    | { type: "error"; code: string; message: string };
+
+type TurnContext = {
+    sessionId: string;
+    turnId: number;
+    text: string;
+    handle: TurnHandle;
+    abortController: AbortController;
+    combined: AbortSignal;
 };
 
 type ConversationRoutesDependencies = {
@@ -120,6 +168,10 @@ export class ConversationRoutes {
                 this.handleDiagnostics(response);
                 return;
             }
+            if (method === "POST" && pathname === "/api/conversation/turn-stream") {
+                await this.handleTurnStream(request, response);
+                return;
+            }
             if (method === "POST" && pathname === "/api/conversation/turn") {
                 await this.handleTurn(request, response);
                 return;
@@ -183,7 +235,52 @@ export class ConversationRoutes {
         return plugin.id;
     }
 
-    private async handleTurn(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    /**
+     * Produces an in-character offline reply when the primary provider (or its
+     * output) fails. Returns null when no usable scripted fallback exists.
+     */
+    private async tryScriptedFallback(
+        personality: PersonalityPluginShape,
+        turn: { sessionId: string; turnId: number; text: string },
+        combined: AbortSignal,
+    ): Promise<DialogueResponse | null> {
+        if (!this.configuration.value.dialogue.scripted.fallbackEnabled) {
+            return null;
+        }
+        if (!this.pluginManager.hasPlugin("dialogue.scripted")) {
+            return null;
+        }
+        try {
+            const request = new DialogueRequest({
+                sessionId: turn.sessionId,
+                turnId: turn.turnId,
+                text: turn.text,
+                history: this.sessionManager.getHistory(turn.sessionId),
+                instructions: personality.buildInstructions(),
+                allowedEmotions: personality.getAllowedEmotions(),
+                allowedDeliveries: personality.getAllowedDeliveries(),
+                maxResponseCharacters: personality.getResponseCharacterLimit(),
+            });
+            return await this.pluginManager
+                .getPlugin<DialoguePluginShape>("dialogue.scripted")
+                .generateResponse(request, combined);
+        } catch (error) {
+            this.logger.warn("Scripted fallback itself failed", {
+                error: error instanceof Error ? error.message : String(error),
+            });
+            return null;
+        }
+    }
+
+    /**
+     * Validates the turn request, opens the turn fence, and wires abort
+     * handling. Responds with the appropriate error and returns null when the
+     * request cannot proceed.
+     */
+    private async openTurn(
+        request: IncomingMessage,
+        response: ServerResponse,
+    ): Promise<TurnContext | null> {
         const body = await this.readJsonBody(request);
         const parsed = parseTurnRequestBody(body);
         if (parsed === null) {
@@ -193,7 +290,7 @@ export class ConversationRoutes {
                 "invalid-request",
                 "The turn request needs sessionId, turnId, and text",
             );
-            return;
+            return null;
         }
         const { sessionId, turnId, text } = parsed;
 
@@ -205,7 +302,7 @@ export class ConversationRoutes {
                 "stale-turn",
                 "A newer turn is already active for this session",
             );
-            return;
+            return null;
         }
 
         const abortController = new AbortController();
@@ -219,6 +316,15 @@ export class ConversationRoutes {
             abortController.signal,
             AbortSignal.timeout(this.configuration.value.conversation.turnTimeoutMs),
         ]);
+        return { sessionId, turnId, text, handle, abortController, combined };
+    }
+
+    private async handleTurn(request: IncomingMessage, response: ServerResponse): Promise<void> {
+        const context = await this.openTurn(request, response);
+        if (context === null) {
+            return;
+        }
+        const { sessionId, turnId, text, handle, abortController, combined } = context;
 
         const personality = this.pluginManager.getByCategory<PersonalityPluginShape>("personality");
         const dialogue = this.pluginManager.getByCategory<DialoguePluginShape>("dialogue");
@@ -267,43 +373,12 @@ export class ConversationRoutes {
                 return;
             }
             const message = error instanceof Error ? error.message : String(error);
-            if (
-                this.configuration.value.dialogue.scripted.fallbackEnabled &&
-                this.pluginManager.hasPlugin("dialogue.scripted")
-            ) {
-                try {
-                    const scriptedRequest = new DialogueRequest({
-                        sessionId,
-                        turnId,
-                        text,
-                        history: this.sessionManager.getHistory(sessionId),
-                        instructions: personality.buildInstructions(),
-                        allowedEmotions: personality.getAllowedEmotions(),
-                        allowedDeliveries: personality.getAllowedDeliveries(),
-                        maxResponseCharacters: personality.getResponseCharacterLimit(),
-                    });
-                    raw = await this.pluginManager
-                        .getPlugin<DialoguePluginShape>("dialogue.scripted")
-                        .generateResponse(scriptedRequest, combined);
-                    dialogueFallback = true;
-                    this.fallbackTurns += 1;
-                    this.logger.warn("Primary dialogue provider failed; scripted fallback used", {
-                        error: message,
-                    });
-                } catch (fallbackError) {
-                    const fallbackMessage =
-                        fallbackError instanceof Error
-                            ? fallbackError.message
-                            : String(fallbackError);
-                    this.sendError(
-                        response,
-                        502,
-                        "dialogue-unavailable",
-                        `Dialogue failed: ${message}; fallback failed: ${fallbackMessage}`,
-                    );
-                    return;
-                }
-            } else {
+            const fallback = await this.tryScriptedFallback(
+                personality,
+                { sessionId, turnId, text },
+                combined,
+            );
+            if (fallback === null) {
                 this.sendError(
                     response,
                     502,
@@ -312,6 +387,12 @@ export class ConversationRoutes {
                 );
                 return;
             }
+            raw = fallback;
+            dialogueFallback = true;
+            this.fallbackTurns += 1;
+            this.logger.warn("Primary dialogue provider failed; scripted fallback used", {
+                error: message,
+            });
         }
         const dialogueMs = Date.now() - dialogueStart;
 
@@ -320,8 +401,22 @@ export class ConversationRoutes {
             processed = this.responseProcessor.process(raw, personality);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            this.sendError(response, 502, "processing-failed", message);
-            return;
+            const fallback = await this.tryScriptedFallback(
+                personality,
+                { sessionId, turnId, text },
+                combined,
+            );
+            if (fallback === null) {
+                this.sendError(response, 502, "processing-failed", message);
+                return;
+            }
+            raw = fallback;
+            dialogueFallback = true;
+            this.fallbackTurns += 1;
+            this.logger.warn("Dialogue reply was rejected; scripted fallback used", {
+                error: message,
+            });
+            processed = this.responseProcessor.process(raw, personality);
         }
 
         const synthesisStart = Date.now();
@@ -434,6 +529,419 @@ export class ConversationRoutes {
             timingSource: timing?.source,
         });
         this.writeJson(response, 200, payload);
+    }
+
+    /**
+     * Streams a turn as NDJSON: one "chunk" event per spoken sentence (audio
+     * plus facial track), then a final "done" event. Speech starts as soon as
+     * the first sentence exists, long before the model has finished writing.
+     */
+    private async handleTurnStream(
+        request: IncomingMessage,
+        response: ServerResponse,
+    ): Promise<void> {
+        const context = await this.openTurn(request, response);
+        if (context === null) {
+            return;
+        }
+        const { sessionId, turnId, text, handle, abortController, combined } = context;
+
+        response.writeHead(200, {
+            "Content-Type": "application/x-ndjson; charset=utf-8",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+        });
+        const writeEvent = (event: TurnStreamEvent): void => {
+            if (!response.writableEnded) {
+                response.write(`${JSON.stringify(event)}\n`);
+            }
+        };
+
+        const personality = this.pluginManager.getByCategory<PersonalityPluginShape>("personality");
+        const dialogue = this.pluginManager.getByCategory<DialoguePluginShape>("dialogue");
+        const speech =
+            this.pluginManager.getByCategory<SpeechSynthesisPluginShape>("speech-synthesis");
+        const lipSync = this.pluginManager.getByCategory<LipSyncPluginShape>("lip-sync");
+        const maxCharacters = personality.getResponseCharacterLimit();
+
+        const t0 = Date.now();
+        const latency = {
+            dialogueMs: 0,
+            synthesisMs: 0,
+            timingMs: 0,
+            lipSyncMs: 0,
+            totalMs: 0,
+            firstChunkMs: -1,
+        };
+        const spokenTexts: string[] = [];
+        let chunkIndex = 0;
+        let timedChunks = 0;
+        let dialogueFallback = false;
+        let providerDialogue = this.pluginManager.getByCategory<PluginLike>("dialogue").id;
+        let providerSpeech = "none";
+        let timingSource: string | null = null;
+        let finalEmotion = "neutral";
+        let finalDelivery = "normal";
+        let spokenText = "";
+
+        const synthesizeChunk = async (
+            chunkText: string,
+        ): Promise<{
+            audioWavBase64: string | null;
+            sampleRate: number | null;
+            durationSeconds: number | null;
+            track: FacialAnimationTrackJson | null;
+            chunkTimingSource: string | null;
+        }> => {
+            const synthesisStart = Date.now();
+            try {
+                const result = await speech.synthesize(
+                    chunkText,
+                    { emotion: "neutral", delivery: "normal" },
+                    combined,
+                );
+                latency.synthesisMs += Date.now() - synthesisStart;
+                providerSpeech = result.voiceId;
+                const timingStart = Date.now();
+                const timing = result.timing ?? this.alignOrEstimate(chunkText, result);
+                latency.timingMs += Date.now() - timingStart;
+                const lipSyncStart = Date.now();
+                const track = lipSync.generateTrack(timing);
+                latency.lipSyncMs += Date.now() - lipSyncStart;
+                timingSource = timing.source;
+                this.timingSourceCounts.set(
+                    timing.source,
+                    (this.timingSourceCounts.get(timing.source) ?? 0) + 1,
+                );
+                timedChunks += 1;
+                return {
+                    audioWavBase64: Buffer.from(result.audioWav).toString("base64"),
+                    sampleRate: result.sampleRate,
+                    durationSeconds: result.durationSeconds,
+                    track: track.toJson(),
+                    chunkTimingSource: timing.source,
+                };
+            } catch (error) {
+                if (abortController.signal.aborted || combined.aborted) {
+                    throw error;
+                }
+                latency.synthesisMs += Date.now() - synthesisStart;
+                this.logger.error(
+                    "Speech synthesis failed for a chunk; continuing with subtitles",
+                    {
+                        error: error instanceof Error ? error.message : String(error),
+                    },
+                );
+                return {
+                    audioWavBase64: null,
+                    sampleRate: null,
+                    durationSeconds: null,
+                    track: null,
+                    chunkTimingSource: null,
+                };
+            }
+        };
+
+        const emitChunk = async (chunkText: string): Promise<void> => {
+            const audio = await synthesizeChunk(chunkText);
+            spokenTexts.push(chunkText);
+            if (latency.firstChunkMs < 0 && audio.audioWavBase64 !== null) {
+                latency.firstChunkMs = Date.now() - t0;
+            }
+            writeEvent({
+                type: "chunk",
+                index: chunkIndex,
+                text: chunkText,
+                audioWavBase64: audio.audioWavBase64,
+                sampleRate: audio.sampleRate,
+                durationSeconds: audio.durationSeconds,
+                track: audio.track,
+                timingSource: audio.chunkTimingSource,
+            });
+            chunkIndex += 1;
+        };
+
+        const runScriptedFallback = async (): Promise<boolean> => {
+            const fallback = await this.tryScriptedFallback(
+                personality,
+                { sessionId, turnId, text },
+                combined,
+            );
+            if (fallback === null) {
+                return false;
+            }
+            dialogueFallback = true;
+            providerDialogue = fallback.providerId;
+            finalEmotion = fallback.emotion;
+            finalDelivery = fallback.delivery;
+            await emitChunk(fallback.text);
+            return true;
+        };
+
+        try {
+            const secret = personality.matchesSecretPhrase(text);
+
+            if (secret !== null) {
+                providerDialogue = "personality.haunted-pumpkin";
+                finalEmotion = secret.emotion;
+                finalDelivery = secret.delivery;
+                await emitChunk(secret.text);
+            } else if (typeof dialogue.streamResponseText === "function") {
+                const dialogueStart = Date.now();
+                let fullRaw = "";
+                // If a reasoning-heavy model thinks for too long without any
+                // speakable text, the booth must not sit in silence: abort the
+                // upstream stream and answer with the scripted line instead.
+                const firstChunkDeadlineMs = 3500;
+                const firstChunkAbort = new AbortController();
+                const streamSignal = AbortSignal.any([combined, firstChunkAbort.signal]);
+                const deadlineTimer = setTimeout(() => {
+                    if (chunkIndex === 0) {
+                        this.logger.warn(
+                            "Dialogue stream produced no speakable text in time; switching to the scripted fallback",
+                        );
+                        firstChunkAbort.abort();
+                    }
+                }, firstChunkDeadlineMs);
+                try {
+                    const dialogueRequest = new DialogueRequest({
+                        sessionId,
+                        turnId,
+                        text,
+                        history: this.sessionManager.getHistory(sessionId),
+                        instructions: personality.buildInstructions(),
+                        allowedEmotions: personality.getAllowedEmotions(),
+                        allowedDeliveries: personality.getAllowedDeliveries(),
+                        maxResponseCharacters: maxCharacters,
+                    });
+                    const streamer = new SpokenTextStreamer({ maxCharacters });
+                    const capturing = captureDeltas(
+                        dialogue.streamResponseText(dialogueRequest, streamSignal),
+                        (delta) => {
+                            fullRaw += delta;
+                        },
+                    );
+                    let firstSentenceReceived = false;
+                    for await (const sentence of streamer.streamSentences(capturing)) {
+                        if (!firstSentenceReceived) {
+                            firstSentenceReceived = true;
+                            clearTimeout(deadlineTimer);
+                        }
+                        if (looksLikeInternalReasoning(sentence)) {
+                            if (chunkIndex === 0) {
+                                throw new Error(
+                                    "Dialogue response contained internal reasoning, not a spoken reply",
+                                );
+                            }
+                            this.logger.warn(
+                                "Stopped a stream that drifted into internal reasoning",
+                                { turnId },
+                            );
+                            break;
+                        }
+                        await emitChunk(sentence);
+                    }
+                } catch (error) {
+                    if (abortController.signal.aborted) {
+                        response.end();
+                        return;
+                    }
+                    if (combined.aborted) {
+                        writeEvent({
+                            type: "error",
+                            code: "dialogue-timeout",
+                            message: "The dialogue provider did not answer in time",
+                        });
+                        response.end();
+                        return;
+                    }
+                    const message = error instanceof Error ? error.message : String(error);
+                    if (chunkIndex > 0) {
+                        // We already spoke something; finish gracefully.
+                        this.logger.warn(
+                            "Dialogue stream failed mid-reply; keeping what was spoken",
+                            {
+                                error: message,
+                            },
+                        );
+                    } else {
+                        this.logger.warn("Dialogue stream failed; scripted fallback used", {
+                            error: message,
+                        });
+                        const fallbackWorked = await runScriptedFallback();
+                        if (!fallbackWorked) {
+                            writeEvent({
+                                type: "error",
+                                code: "dialogue-unavailable",
+                                message: `Dialogue provider failed: ${message}`,
+                            });
+                            response.end();
+                            return;
+                        }
+                    }
+                } finally {
+                    clearTimeout(deadlineTimer);
+                    latency.dialogueMs = Date.now() - dialogueStart;
+                }
+
+                if (chunkIndex === 0 && fullRaw.trim() !== "") {
+                    // Nothing speakable arrived; try the classic pipeline once.
+                    try {
+                        const processed = this.responseProcessor.process(
+                            new DialogueResponse(fullRaw, "neutral", "normal", providerDialogue),
+                            personality,
+                        );
+                        finalEmotion = processed.emotion;
+                        finalDelivery = processed.delivery;
+                        await emitChunk(processed.text);
+                    } catch (error) {
+                        this.logger.warn(
+                            "Streamed reply produced no usable speech; using fallback",
+                            {
+                                error: error instanceof Error ? error.message : String(error),
+                            },
+                        );
+                        await runScriptedFallback();
+                    }
+                }
+                if (chunkIndex > 0 && fullRaw.trim() !== "") {
+                    try {
+                        const processed = this.responseProcessor.process(
+                            new DialogueResponse(fullRaw, "neutral", "normal", providerDialogue),
+                            personality,
+                        );
+                        finalEmotion = processed.emotion;
+                        finalDelivery = processed.delivery;
+                    } catch {
+                        // keep the neutral defaults; the spoken text is already decided
+                    }
+                }
+            } else {
+                // Provider without streaming support: classic single-chunk turn.
+                const dialogueStart = Date.now();
+                let raw: DialogueResponse;
+                try {
+                    const dialogueRequest = new DialogueRequest({
+                        sessionId,
+                        turnId,
+                        text,
+                        history: this.sessionManager.getHistory(sessionId),
+                        instructions: personality.buildInstructions(),
+                        allowedEmotions: personality.getAllowedEmotions(),
+                        allowedDeliveries: personality.getAllowedDeliveries(),
+                        maxResponseCharacters: maxCharacters,
+                    });
+                    raw = await dialogue.generateResponse(dialogueRequest, combined);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    this.logger.warn("Dialogue provider failed; scripted fallback used", {
+                        error: message,
+                    });
+                    if (!(await runScriptedFallback())) {
+                        writeEvent({
+                            type: "error",
+                            code: "dialogue-unavailable",
+                            message: `Dialogue provider failed: ${message}`,
+                        });
+                        response.end();
+                        return;
+                    }
+                    raw = new DialogueResponse("", "neutral", "normal", providerDialogue);
+                } finally {
+                    latency.dialogueMs = Date.now() - dialogueStart;
+                }
+                if (!dialogueFallback) {
+                    try {
+                        const processed = this.responseProcessor.process(raw, personality);
+                        finalEmotion = processed.emotion;
+                        finalDelivery = processed.delivery;
+                        providerDialogue = raw.providerId;
+                        await emitChunk(processed.text);
+                    } catch (error) {
+                        this.logger.warn("Dialogue reply was rejected; scripted fallback used", {
+                            error: error instanceof Error ? error.message : String(error),
+                        });
+                        if (!(await runScriptedFallback()) && chunkIndex === 0) {
+                            writeEvent({
+                                type: "error",
+                                code: "processing-failed",
+                                message: error instanceof Error ? error.message : String(error),
+                            });
+                            response.end();
+                            return;
+                        }
+                    }
+                }
+            }
+
+            if (chunkIndex === 0) {
+                const fallbackWorked = await runScriptedFallback();
+                if (!fallbackWorked) {
+                    writeEvent({
+                        type: "error",
+                        code: "no-reply",
+                        message: "The dialogue provider produced no spoken reply",
+                    });
+                    response.end();
+                    return;
+                }
+            }
+
+            spokenText = spokenTexts.join(" ").trim();
+
+            if (!handle.isCurrent()) {
+                this.sessionManager.setActiveTurnController(sessionId, null);
+                writeEvent({ type: "stale", turnId });
+                response.end();
+                return;
+            }
+            this.sessionManager.setActiveTurnController(sessionId, null);
+
+            this.sessionManager.recordVisitorMessage(sessionId, text);
+            if (spokenText !== "") {
+                this.sessionManager.recordCharacterMessage(sessionId, spokenText);
+            }
+
+            latency.totalMs = Date.now() - t0;
+            this.turnsCompleted += 1;
+            this.latencySamples += 1;
+            this.latencySums.dialogueMs += latency.dialogueMs;
+            this.latencySums.synthesisMs += latency.synthesisMs;
+            this.latencySums.timingMs += latency.timingMs;
+            this.latencySums.lipSyncMs += latency.lipSyncMs;
+            this.latencySums.totalMs += latency.totalMs;
+
+            this.logger.debug("Streamed turn completed", {
+                turnId,
+                chunks: chunkIndex,
+                firstChunkMs: latency.firstChunkMs,
+                dialogueFallback,
+            });
+            writeEvent({
+                type: "done",
+                turnId,
+                text: spokenText,
+                emotion: finalEmotion,
+                delivery: finalDelivery,
+                timingSource,
+                degraded: timedChunks === 0,
+                dialogueFallback,
+                providers: { dialogue: providerDialogue, speech: providerSpeech },
+                latency,
+            });
+            response.end();
+        } catch (error) {
+            if (abortController.signal.aborted) {
+                response.end();
+                return;
+            }
+            const message = error instanceof Error ? error.message : String(error);
+            this.logger.error("Streamed turn failed", { turnId, error: message });
+            this.recordError("internal", message);
+            writeEvent({ type: "error", code: "internal", message });
+            response.end();
+        }
     }
 
     private alignOrEstimate(text: string, speechResult: SpeechResult): SpeechTiming {
@@ -730,4 +1238,18 @@ function readSessionId(body: unknown): string | null {
         return null;
     }
     return sessionId;
+}
+
+/**
+ * Passes a delta stream through untouched while capturing every delta, so the
+ * route can keep the full raw reply for the final intent parse.
+ */
+async function* captureDeltas(
+    source: AsyncGenerator<string>,
+    onDelta: (delta: string) => void,
+): AsyncGenerator<string> {
+    for await (const delta of source) {
+        onDelta(delta);
+        yield delta;
+    }
 }

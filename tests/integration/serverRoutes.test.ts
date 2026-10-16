@@ -10,6 +10,8 @@ import { SpeechTimingProcessor } from "../../src/animation/SpeechTimingProcessor
 import { ApplicationCompositionRoot } from "../../src/server/ApplicationCompositionRoot";
 import { ConversationRoutes } from "../../src/server/ConversationRoutes";
 import { createHttpServer } from "../../src/server/server";
+import { ScriptedDialoguePlugin } from "../../src/plugins/dialogue/ScriptedDialoguePlugin";
+import { DialogueResponse } from "../../src/data/DialogueResponse";
 import {
     FakeDialoguePlugin,
     FakeLipSyncPlugin,
@@ -83,46 +85,55 @@ async function readJson<T>(response: Response): Promise<T> {
     return payload as T;
 }
 
-async function startTestBooth(): Promise<TestBooth> {
+async function startTestBooth(options?: {
+    dialogueText?: string;
+    withScripted?: boolean;
+    streamingText?: string;
+}): Promise<TestBooth & { streaming?: FakeStreamingDialoguePlugin }> {
     const { logger } = createCapturingLogger();
     const configuration = await ApplicationConfiguration.load({ environment: {} });
 
-    const dialogue = new FakeDialoguePlugin();
+    const dialogue = new FakeDialoguePlugin(options?.dialogueText);
+    const streaming =
+        options?.streamingText !== undefined
+            ? new FakeStreamingDialoguePlugin(options.streamingText)
+            : undefined;
     const recognition = new FakeSpeechRecognitionPlugin();
     const synthesis = new FakeSpeechSynthesisPlugin();
     const memory = new FakeMemoryPlugin();
     const registry = new PluginRegistry();
-    registry.add("dialogue.fake", () => dialogue);
+    if (streaming !== undefined) {
+        registry.add("dialogue.streaming", () => streaming);
+    } else {
+        registry.add("dialogue.fake", () => dialogue);
+    }
     registry.add("personality.fake", () => new FakePersonalityPlugin());
     registry.add("speech-recognition.fake", () => recognition);
     registry.add("speech-synthesis.fake", () => synthesis);
     registry.add("lipsync.fake", () => new FakeLipSyncPlugin());
     registry.add("memory.fake", () => memory);
+    if (options?.withScripted === true) {
+        registry.add("dialogue.scripted", (childLogger) => new ScriptedDialoguePlugin(childLogger));
+    }
 
     const selection: PluginSelection = {
-        dialogue: "dialogue.fake",
+        dialogue: streaming !== undefined ? "dialogue.streaming" : "dialogue.fake",
         personality: "personality.fake",
         speechRecognition: "speech-recognition.fake",
         speechSynthesis: "speech-synthesis.fake",
         lipSync: "lipsync.fake",
         memory: "memory.fake",
-        character: "character.fake",
-        microphone: "microphone.fake",
-        audioPlayback: "audioPlayback.fake",
-        additional: [],
+        character: null,
+        microphone: null,
+        audioPlayback: null,
+        additional: options?.withScripted === true ? ["dialogue.scripted"] : [],
     };
 
     const pluginManager = new PluginManager(selection, logger);
-    // Client-only categories (character, microphone, audio-playback) are never
-    // loaded here, so the selection ids above are never resolved against the registry.
-    await pluginManager.loadFromRegistry(registry, [
-        "dialogue",
-        "personality",
-        "speech-recognition",
-        "speech-synthesis",
-        "lip-sync",
-        "memory",
-    ]);
+    // Client-only categories are null-selected so the unfiltered load (the
+    // only mode that also loads "additional" plugins such as the scripted
+    // fallback) can run against a server-only registry.
+    await pluginManager.loadFromRegistry(registry);
 
     const sessionManager = new ConversationSessionManager(
         memory,
@@ -144,7 +155,50 @@ async function startTestBooth(): Promise<TestBooth> {
         server.listen(0, "127.0.0.1", resolve);
     });
     const port = (server.address() as AddressInfo).port;
-    return { base: `http://127.0.0.1:${port}`, server, pluginManager, dialogue };
+    return {
+        base: `http://127.0.0.1:${port}`,
+        server,
+        pluginManager,
+        dialogue,
+        ...(streaming !== undefined ? { streaming } : {}),
+    };
+}
+
+/**
+ * A dialogue provider that supports streaming: it writes its JSON reply out
+ * in small pieces so the route can speak sentence by sentence.
+ */
+class FakeStreamingDialoguePlugin {
+    readonly id = "dialogue.streaming";
+    readonly version = "1.0.0";
+    readonly category = "dialogue";
+
+    constructor(private readonly jsonText: string) {}
+
+    async initialize(): Promise<void> {}
+
+    async shutdown(): Promise<void> {}
+
+    async generateResponse(): Promise<DialogueResponse> {
+        return new DialogueResponse(this.jsonText, "neutral", "normal", this.id);
+    }
+
+    async *streamResponseText(): AsyncGenerator<string> {
+        const pieceSize = 6;
+        for (let index = 0; index < this.jsonText.length; index += pieceSize) {
+            yield this.jsonText.slice(index, index + pieceSize);
+        }
+    }
+}
+
+type StreamLine = { type: string } & Record<string, unknown>;
+
+async function readNdjson(response: Response): Promise<StreamLine[]> {
+    const text = await response.text();
+    return text
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line) as StreamLine);
 }
 
 let booth: TestBooth;
@@ -363,6 +417,129 @@ describe("ApplicationCompositionRoot", () => {
             expect(manager.hasPlugin("dialogue.scripted")).toBe(true);
         } finally {
             await runtime.stop();
+        }
+    });
+});
+
+describe("streamed turns (/api/conversation/turn-stream)", () => {
+    it("streams sentence chunks with audio and tracks, then a done event", async () => {
+        const streamingBooth = await startTestBooth({
+            streamingText: JSON.stringify({
+                text: "First sentence here. Second one follows!",
+                emotion: "amused",
+                delivery: "normal",
+            }),
+        });
+        try {
+            const response = await fetch(`${streamingBooth.base}/api/conversation/turn-stream`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sessionId: "stream-test-1ab",
+                    turnId: 1,
+                    text: "hello",
+                }),
+            });
+            expect(response.status).toBe(200);
+            expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+
+            const lines = await readNdjson(response);
+            const chunks = lines.filter((line) => line.type === "chunk");
+            const done = lines.find((line) => line.type === "done");
+
+            expect(chunks).toHaveLength(2);
+            expect(chunks[0].text).toBe("First sentence here.");
+            expect(chunks[1].text).toBe("Second one follows!");
+            for (const chunk of chunks) {
+                expect(typeof chunk.audioWavBase64).toBe("string");
+                expect((chunk.audioWavBase64 as string).length).toBeGreaterThan(100);
+                expect(chunk.track).not.toBeNull();
+            }
+            expect(done).toBeDefined();
+            expect(done?.text).toBe("First sentence here. Second one follows!");
+            expect(done?.emotion).toBe("amused");
+            expect(done?.degraded).toBe(false);
+            expect(done?.dialogueFallback).toBe(false);
+            const latency = done?.latency as { firstChunkMs: number; totalMs: number };
+            expect(latency.firstChunkMs).toBeGreaterThanOrEqual(0);
+            expect(latency.totalMs).toBeGreaterThanOrEqual(0);
+        } finally {
+            await new Promise<void>((resolve) => streamingBooth.server.close(() => resolve()));
+        }
+    });
+
+    it("falls back to the scripted line when the streamed reply is internal reasoning", async () => {
+        const streamingBooth = await startTestBooth({
+            withScripted: true,
+            streamingText: JSON.stringify({
+                text: "The user is asking something odd. Let's parse it carefully before answering.",
+                emotion: "neutral",
+                delivery: "normal",
+            }),
+        });
+        try {
+            const response = await fetch(`${streamingBooth.base}/api/conversation/turn-stream`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sessionId: "stream-test-2ab",
+                    turnId: 1,
+                    text: "hello",
+                }),
+            });
+            const lines = await readNdjson(response);
+            const chunks = lines.filter((line) => line.type === "chunk");
+            const done = lines.find((line) => line.type === "done");
+
+            expect(chunks.length).toBeGreaterThanOrEqual(1);
+            expect(String(chunks[0].text)).toContain("new face in the candlelight");
+            expect(done?.dialogueFallback).toBe(true);
+        } finally {
+            await new Promise<void>((resolve) => streamingBooth.server.close(() => resolve()));
+        }
+    });
+
+    it("serves non-streaming providers as a single chunk over the stream endpoint", async () => {
+        const response = await fetch(`${booth.base}/api/conversation/turn-stream`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId: "stream-test-3ab", turnId: 1, text: "hello" }),
+        });
+        const lines = await readNdjson(response);
+        const chunks = lines.filter((line) => line.type === "chunk");
+        const done = lines.find((line) => line.type === "done");
+
+        expect(chunks).toHaveLength(1);
+        expect(chunks[0].text).toBe("Boo to you.");
+        expect(done?.text).toBe("Boo to you.");
+    });
+
+    it("classic endpoint falls back to scripted when the reply is internal reasoning", async () => {
+        const reasoningBooth = await startTestBooth({
+            withScripted: true,
+            dialogueText: JSON.stringify({
+                text: "The user is asking: something. We need to respond as Gourdrick.",
+                emotion: "neutral",
+                delivery: "normal",
+            }),
+        });
+        try {
+            const response = await fetch(`${reasoningBooth.base}/api/conversation/turn`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sessionId: "reasoning-test-1",
+                    turnId: 1,
+                    text: "hello",
+                }),
+            });
+            expect(response.status).toBe(200);
+            const payload = await readJson<TurnPayload>(response);
+            expect(payload.dialogueFallback).toBe(true);
+            expect(payload.text).toContain("new face in the candlelight");
+            expect(payload.providers.dialogue).toBe("dialogue.scripted");
+        } finally {
+            await new Promise<void>((resolve) => reasoningBooth.server.close(() => resolve()));
         }
     });
 });

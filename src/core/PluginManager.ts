@@ -66,6 +66,12 @@ export type PluginLike = {
 
 export type DialoguePluginShape = {
     generateResponse(request: DialogueRequest, signal: AbortSignal): Promise<DialogueResponse>;
+    /**
+     * Optional: stream the raw model output one text delta at a time so the
+     * conversation route can start speaking before the model finishes. Only
+     * reply text deltas are yielded; internal reasoning must never appear.
+     */
+    streamResponseText?(request: DialogueRequest, signal: AbortSignal): AsyncGenerator<string>;
 };
 
 export type PersonalitySecretMatch = {

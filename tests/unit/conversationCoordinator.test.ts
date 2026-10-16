@@ -19,23 +19,59 @@ const WAV_BYTES = makeToneWav(0.5, [
 ]);
 const WAV_BASE64 = Buffer.from(WAV_BYTES).toString("base64");
 
-function turnPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+type StreamChunk = {
+    type: "chunk";
+    index: number;
+    text: string;
+    audioWavBase64: string | null;
+    sampleRate: number | null;
+    durationSeconds: number | null;
+    track: unknown;
+    timingSource: string | null;
+};
+
+function chunkEvent(index: number, text: string, audio: boolean = true): StreamChunk {
     return {
+        type: "chunk",
+        index,
+        text,
+        audioWavBase64: audio ? WAV_BASE64 : null,
+        sampleRate: audio ? 22050 : null,
+        durationSeconds: audio ? 0.5 : null,
+        track: audio ? silenceTrack(0.5).toJson() : null,
+        timingSource: audio ? "energy-alignment" : null,
+    };
+}
+
+function doneEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+        type: "done",
         turnId: 1,
         text: "Boo to you!",
         emotion: "amused",
         delivery: "normal",
-        audioWavBase64: WAV_BASE64,
-        sampleRate: 22050,
-        durationSeconds: 0.5,
-        track: silenceTrack(0.5).toJson(),
-        timingSource: "fixture",
+        timingSource: "energy-alignment",
         degraded: false,
         dialogueFallback: false,
-        latency: { dialogueMs: 12, synthesisMs: 34, timingMs: 3, lipSyncMs: 4, totalMs: 53 },
         providers: { dialogue: "dialogue-double", speech: "speech-double" },
+        latency: {
+            dialogueMs: 12,
+            synthesisMs: 34,
+            timingMs: 3,
+            lipSyncMs: 4,
+            totalMs: 53,
+            firstChunkMs: 40,
+        },
         ...overrides,
     };
+}
+
+function ndjsonResponse(events: Array<Record<string, unknown>>, status = 200): Response {
+    const body = events.map((event) => JSON.stringify(event)).join("\n") + "\n";
+    return new Response(body, {
+        status,
+        headers: { "Content-Type": "application/x-ndjson" },
+    });
 }
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -72,45 +108,99 @@ function queueFetch(responses: QueuedResponse[]): { fetchImpl: typeof fetch; cal
 }
 
 type PlaybackStats = {
-    preparedBytes: Uint8Array[];
-    playCalls: number;
+    enqueuedBytes: Uint8Array[];
+    playQueueCalls: number;
+    startCalls: number;
     stopFades: number[];
+    chunkStarts: number[];
+    drainCount: number;
 };
 
 function createPlaybackDouble(): {
     playback: AudioPlaybackController;
     stats: PlaybackStats;
-    fireEnded: () => void;
+    fireChunkEnded: () => void;
+    finishAll: () => void;
 } {
-    const stats: PlaybackStats = { preparedBytes: [], playCalls: 0, stopFades: [] };
+    const stats: PlaybackStats = {
+        enqueuedBytes: [],
+        playQueueCalls: 0,
+        startCalls: 0,
+        stopFades: [],
+        chunkStarts: [],
+        drainCount: 0,
+    };
+    const queue: number[] = [];
     let playing = false;
-    let endedListener: (() => void) | null = null;
+    let nextIndex = 0;
+    let chunkStartedListener: ((index: number) => void) | null = null;
+    let drainedListener: (() => void) | null = null;
+
+    const startNext = (): void => {
+        if (playing || queue.length === 0) {
+            return;
+        }
+        queue.shift();
+        const index = nextIndex;
+        nextIndex += 1;
+        playing = true;
+        stats.startCalls += 1;
+        stats.chunkStarts.push(index);
+        chunkStartedListener?.(index);
+    };
+
+    const fireChunkEnded = (): void => {
+        if (!playing) {
+            return;
+        }
+        playing = false;
+        if (queue.length > 0) {
+            startNext();
+        } else {
+            stats.drainCount += 1;
+            drainedListener?.();
+        }
+    };
+
     const double = {
-        prepare: async (wavBytes: Uint8Array): Promise<void> => {
-            stats.preparedBytes.push(wavBytes);
+        enqueue: async (wavBytes: Uint8Array): Promise<void> => {
+            stats.enqueuedBytes.push(wavBytes);
+            queue.push(1);
         },
-        play: (): void => {
-            stats.playCalls += 1;
-            playing = true;
+        playQueue: (): void => {
+            stats.playQueueCalls += 1;
+            startNext();
         },
+        isPlaying: (): boolean => playing,
         stop: (fadeMs = 0): void => {
             stats.stopFades.push(fadeMs);
             playing = false;
+            queue.length = 0;
+            nextIndex = 0;
         },
-        isPlaying: (): boolean => playing,
+        onChunkStarted: (listener: (index: number) => void): void => {
+            chunkStartedListener = listener;
+        },
+        onQueueDrained: (listener: () => void): void => {
+            drainedListener = listener;
+        },
+        getCurrentChunkIndex: (): number => nextIndex - 1,
         getPlaybackSeconds: (): number => 0,
-        onEnded: (listener: () => void): void => {
-            endedListener = listener;
-        },
+        dispose: (): void => {},
     };
     return {
         playback: double as unknown as AudioPlaybackController,
         stats,
-        fireEnded: (): void => {
-            playing = false;
-            const listener = endedListener;
-            endedListener = null;
-            listener?.();
+        fireChunkEnded,
+        finishAll: (): void => {
+            let guard = 0;
+            while (playing || queue.length > 0) {
+                if (guard > 50) {
+                    throw new Error("playback double did not drain");
+                }
+                guard += 1;
+                fireChunkEnded();
+            }
         },
     };
 }
@@ -150,7 +240,8 @@ type Harness = {
     characterEvents: CharacterState[];
     playbackStats: PlaybackStats;
     facialStats: FacialStats;
-    fireEnded: () => void;
+    fireChunkEnded: () => void;
+    finishAll: () => void;
     calls: FetchCall[];
 };
 
@@ -166,7 +257,7 @@ function createHarness(options: HarnessOptions): Harness {
     });
     character.setAutoListen(options.autoListen ?? false);
 
-    const { playback, stats: playbackStats, fireEnded } = createPlaybackDouble();
+    const { playback, stats: playbackStats, fireChunkEnded, finishAll } = createPlaybackDouble();
     const { facialAnimation, stats: facialStats } = createFacialDouble();
     const { fetchImpl, calls } = queueFetch(options.responses);
 
@@ -189,212 +280,250 @@ function createHarness(options: HarnessOptions): Harness {
         characterEvents,
         playbackStats,
         facialStats,
-        fireEnded,
+        fireChunkEnded,
+        finishAll,
         calls,
     };
 }
 
 describe("ConversationCoordinator", () => {
-    it("submits a turn, prepares audio and track, plays before end, and completes on playback end", async () => {
-        const completed: TurnDiagnostics[] = [];
-        const {
-            coordinator,
-            character,
-            characterEvents,
-            playbackStats,
-            facialStats,
-            fireEnded,
-            calls,
-        } = createHarness({
-            responses: [jsonResponse(turnPayload())],
-            onTurnCompleted: (diagnostics) => completed.push(diagnostics),
-        });
-        character.visitorSpeechStarted();
-        characterEvents.length = 0;
-
-        const submission = coordinator.submitUtterance("hi");
-        await flushMicrotasks();
-
-        expect(calls).toHaveLength(1);
-        expect(calls[0].url).toBe(`${API_BASE}/api/conversation/turn`);
-        expect(calls[0].init?.method).toBe("POST");
-        expect(JSON.parse(String(calls[0].init?.body))).toEqual({
-            sessionId: SESSION_ID,
-            turnId: 1,
-            text: "hi",
-        });
-
-        expect(playbackStats.preparedBytes).toHaveLength(1);
-        expect(Array.from(playbackStats.preparedBytes[0])).toEqual(Array.from(WAV_BYTES));
-        expect(facialStats.preparedTracks).toHaveLength(1);
-        expect(facialStats.preparedTracks[0].durationSeconds).toBe(0.5);
-
-        // play() happened and the character is SPEAKING even though onEnded never fired.
-        expect(playbackStats.playCalls).toBe(1);
-        expect(character.getState()).toBe("SPEAKING");
-        expect(characterEvents).toEqual(["THINKING", "PREPARING_SPEECH", "SPEAKING"]);
-
-        fireEnded();
-        await submission;
-
-        expect(character.getState()).toBe("IDLE");
-        expect(characterEvents).toEqual(["THINKING", "PREPARING_SPEECH", "SPEAKING", "IDLE"]);
-        expect(completed).toHaveLength(1);
-        expect(completed[0].text).toBe("Boo to you!");
-        expect(completed[0].latency.endOfUtteranceToFirstAudibleMs).toBeGreaterThanOrEqual(0);
-        expect(coordinator.isBusy()).toBe(false);
-    });
-
-    it("discards an interrupted turn's result and never plays its audio", async () => {
-        let resolveFirst: (response: Response) => void = () => {
-            throw new Error("deferred response was never set up");
-        };
-        const firstResponse = new Promise<Response>((resolve) => {
-            resolveFirst = resolve;
-        });
-        const completed: TurnDiagnostics[] = [];
-        const { coordinator, character, playbackStats } = createHarness({
-            responses: [() => firstResponse],
-            onTurnCompleted: (diagnostics) => completed.push(diagnostics),
-        });
-        character.visitorSpeechStarted();
-
-        const submission = coordinator.submitUtterance("one");
-        await flushMicrotasks();
-
-        coordinator.interrupt();
-        expect(character.getState()).toBe("INTERRUPTED");
-        expect(playbackStats.stopFades).toEqual([80]);
-
-        resolveFirst(jsonResponse(turnPayload()));
-        await submission;
-        await flushMicrotasks();
-
-        expect(completed).toHaveLength(0);
-        expect(playbackStats.playCalls).toBe(0);
-        expect(character.getState()).toBe("INTERRUPTED");
-    });
-
-    it("treats a 409 stale-turn response as a silent no-op", async () => {
-        const errors: string[] = [];
-        const { coordinator, character, playbackStats } = createHarness({
-            responses: [jsonResponse({ error: { code: "stale-turn" } }, 409)],
-            onError: (message) => errors.push(message),
-        });
-        character.visitorSpeechStarted();
-
-        await coordinator.submitUtterance("hi");
-
-        expect(errors).toHaveLength(0);
-        expect(character.getState()).toBe("THINKING");
-        expect(playbackStats.playCalls).toBe(0);
-    });
-
-    it("reports HTTP failures through onError and recovers the character to IDLE", async () => {
-        const errors: string[] = [];
-        const { coordinator, character, characterEvents, playbackStats } = createHarness({
-            responses: [jsonResponse({ error: "boom" }, 500)],
-            onError: (message) => errors.push(message),
-        });
-        character.visitorSpeechStarted();
-        characterEvents.length = 0;
-
-        await coordinator.submitUtterance("hi");
-
-        expect(errors).toHaveLength(1);
-        expect(errors[0]).toContain("HTTP 500");
-        expect(character.getState()).toBe("IDLE");
-        expect(characterEvents).toEqual(["THINKING", "RECOVERING", "IDLE"]);
-        expect(playbackStats.playCalls).toBe(0);
-        expect(coordinator.isBusy()).toBe(false);
-    });
-
-    it("handles a degraded subtitle-only payload without playing audio", async () => {
+    it("streams a multi-chunk turn: plays chunk by chunk, then completes on drain", async () => {
         const spoken: string[] = [];
         const completed: TurnDiagnostics[] = [];
-        const { coordinator, character, characterEvents, playbackStats } = createHarness({
+        const harness = createHarness({
             responses: [
-                jsonResponse(turnPayload({ degraded: true, audioWavBase64: null, track: null })),
+                ndjsonResponse([
+                    chunkEvent(0, "Boo to you!"),
+                    chunkEvent(1, "Then more of me."),
+                    doneEvent({ text: "Boo to you! Then more of me." }),
+                ]),
             ],
             onSpokenText: (text) => spoken.push(text),
             onTurnCompleted: (diagnostics) => completed.push(diagnostics),
         });
-        character.visitorSpeechStarted();
-        characterEvents.length = 0;
+        harness.character.visitorSpeechStarted();
+        harness.characterEvents.length = 0;
 
-        await coordinator.submitUtterance("hi");
+        const submission = harness.coordinator.submitUtterance("hi");
+        await flushMicrotasks();
 
-        expect(spoken).toEqual(["Boo to you!"]);
-        expect(playbackStats.playCalls).toBe(0);
-        expect(playbackStats.preparedBytes).toHaveLength(0);
-        expect(characterEvents).toEqual(["THINKING", "PREPARING_SPEECH", "SPEAKING", "IDLE"]);
+        // First chunk started playing with its track while the stream continued.
+        expect(harness.playbackStats.enqueuedBytes).toHaveLength(2);
+        expect(harness.playbackStats.chunkStarts).toEqual([0]);
+        expect(harness.facialStats.preparedTracks).toHaveLength(1);
+        expect(spoken).toEqual(["Boo to you!", "Boo to you! Then more of me."]);
+
+        harness.fireChunkEnded();
+        expect(harness.playbackStats.chunkStarts).toEqual([0, 1]);
+        expect(harness.facialStats.preparedTracks).toHaveLength(2);
+        harness.fireChunkEnded();
+
+        await submission;
+
+        expect(harness.character.getState()).toBe("IDLE");
+        expect(harness.characterEvents).toEqual([
+            "THINKING",
+            "PREPARING_SPEECH",
+            "SPEAKING",
+            "IDLE",
+        ]);
         expect(completed).toHaveLength(1);
-        expect(completed[0].degraded).toBe(true);
-        expect(completed[0].text).toBe("Boo to you!");
+        expect(completed[0].text).toBe("Boo to you! Then more of me.");
+        expect(completed[0].emotion).toBe("amused");
+        expect(completed[0].latency.endOfUtteranceToFirstAudibleMs).toBeGreaterThanOrEqual(0);
+        expect(completed[0].degraded).toBe(false);
+        expect(harness.calls[0].url).toBe(`${API_BASE}/api/conversation/turn-stream`);
     });
 
-    it("lands in LISTENING after a degraded payload while autoListen is enabled", async () => {
-        const { coordinator, character } = createHarness({
+    it("discards an interrupted turn's stream and never plays its audio", async () => {
+        const streamControl: {
+            current: ReadableStreamDefaultController<Uint8Array> | null;
+        } = { current: null };
+        const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+                streamControl.current = controller;
+            },
+        });
+        const harness = createHarness({
+            responses: [new Response(stream, { status: 200 })],
+        });
+        harness.character.visitorSpeechStarted();
+        harness.characterEvents.length = 0;
+
+        const submission = harness.coordinator.submitUtterance("first");
+        await flushMicrotasks();
+
+        harness.coordinator.interrupt();
+        const encoder = new TextEncoder();
+        streamControl.current?.enqueue(
+            encoder.encode(`${JSON.stringify(chunkEvent(0, "late audio"))}\n`),
+        );
+        streamControl.current?.close();
+        await submission;
+        await flushMicrotasks();
+
+        expect(harness.character.getState()).toBe("INTERRUPTED");
+        expect(harness.playbackStats.enqueuedBytes).toHaveLength(0);
+        expect(harness.playbackStats.startCalls).toBe(0);
+    });
+
+    it("treats a 409 stale-turn response as a silent no-op", async () => {
+        const errors: string[] = [];
+        const harness = createHarness({
+            responses: [jsonResponse({ error: { code: "stale-turn", message: "stale" } }, 409)],
+            onError: (message) => errors.push(message),
+        });
+        harness.character.visitorSpeechStarted();
+        harness.characterEvents.length = 0;
+
+        await harness.coordinator.submitUtterance("hi");
+
+        expect(errors).toEqual([]);
+        // A stale turn is superseded by a newer one, which owns the state
+        // from here; the coordinator deliberately leaves it alone.
+        expect(harness.character.getState()).toBe("THINKING");
+    });
+
+    it("reports HTTP failures through onError and recovers the character to IDLE", async () => {
+        const errors: string[] = [];
+        const harness = createHarness({
+            responses: [jsonResponse({ error: "boom" }, 500)],
+            onError: (message) => errors.push(message),
+        });
+        harness.character.visitorSpeechStarted();
+        harness.characterEvents.length = 0;
+
+        await harness.coordinator.submitUtterance("hi");
+
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toContain("HTTP 500");
+        expect(harness.character.getState()).toBe("IDLE");
+        expect(harness.characterEvents).toEqual(["THINKING", "RECOVERING", "IDLE"]);
+        expect(harness.playbackStats.startCalls).toBe(0);
+        expect(harness.coordinator.isBusy()).toBe(false);
+    });
+
+    it("surfaces in-stream error events through onError and stops cleanly", async () => {
+        const errors: string[] = [];
+        const harness = createHarness({
             responses: [
-                jsonResponse(turnPayload({ degraded: true, audioWavBase64: null, track: null })),
+                ndjsonResponse([
+                    { type: "error", code: "dialogue-unavailable", message: "provider melted" },
+                ]),
+            ],
+            onError: (message) => errors.push(message),
+        });
+        harness.character.visitorSpeechStarted();
+        harness.characterEvents.length = 0;
+
+        await harness.coordinator.submitUtterance("hi");
+
+        expect(errors).toEqual(["provider melted"]);
+        expect(harness.character.getState()).toBe("IDLE");
+    });
+
+    it("handles a degraded subtitle-only stream without playing audio", async () => {
+        const spoken: string[] = [];
+        const completed: TurnDiagnostics[] = [];
+        const harness = createHarness({
+            responses: [
+                ndjsonResponse([
+                    chunkEvent(0, "Subtitles only, friend.", false),
+                    doneEvent({ text: "Subtitles only, friend.", degraded: true }),
+                ]),
+            ],
+            onSpokenText: (text) => spoken.push(text),
+            onTurnCompleted: (diagnostics) => completed.push(diagnostics),
+        });
+        harness.character.visitorSpeechStarted();
+        harness.characterEvents.length = 0;
+
+        await harness.coordinator.submitUtterance("hi");
+
+        expect(spoken).toEqual(["Subtitles only, friend."]);
+        expect(harness.playbackStats.startCalls).toBe(0);
+        expect(harness.playbackStats.enqueuedBytes).toHaveLength(0);
+        expect(harness.characterEvents).toEqual([
+            "THINKING",
+            "PREPARING_SPEECH",
+            "SPEAKING",
+            "IDLE",
+        ]);
+        expect(completed).toHaveLength(1);
+        expect(completed[0].degraded).toBe(true);
+        expect(completed[0].text).toBe("Subtitles only, friend.");
+    });
+
+    it("lands in LISTENING after a degraded stream while autoListen is enabled", async () => {
+        const harness = createHarness({
+            responses: [
+                ndjsonResponse([
+                    chunkEvent(0, "No audio here.", false),
+                    doneEvent({ text: "No audio here.", degraded: true }),
+                ]),
             ],
             autoListen: true,
         });
-        character.visitorSpeechStarted();
+        harness.character.visitorSpeechStarted();
 
-        await coordinator.submitUtterance("hi");
+        await harness.coordinator.submitUtterance("hi");
 
-        expect(character.getState()).toBe("LISTENING");
+        expect(harness.character.getState()).toBe("LISTENING");
     });
 
     it("reset clears playback and animation and posts to the reset endpoint", async () => {
-        const { coordinator, character, playbackStats, facialStats, fireEnded, calls } =
-            createHarness({
-                responses: [jsonResponse(turnPayload()), jsonResponse({ ok: true })],
-            });
-        character.visitorSpeechStarted();
-
-        const submission = coordinator.submitUtterance("hi");
+        const harness = createHarness({
+            responses: [
+                ndjsonResponse([
+                    chunkEvent(0, "Silent.", false),
+                    doneEvent({ text: "Silent.", degraded: true }),
+                ]),
+                jsonResponse({ ok: true }),
+            ],
+        });
+        harness.character.visitorSpeechStarted();
+        await harness.coordinator.submitUtterance("hi");
         await flushMicrotasks();
-        fireEnded();
-        await submission;
-        expect(character.getState()).toBe("IDLE");
 
-        character.visitorSpeechStarted(); // back to LISTENING so reset has something to clear
-        await coordinator.reset();
+        await harness.coordinator.reset();
 
-        const resetCall = calls.find((call) => call.url === `${API_BASE}/api/conversation/reset`);
-        expect(resetCall).toBeDefined();
-        expect(resetCall?.init?.method).toBe("POST");
-        expect(JSON.parse(String(resetCall?.init?.body))).toEqual({ sessionId: SESSION_ID });
-        expect(character.getState()).toBe("IDLE");
-        expect(facialStats.clearCalls).toBe(1);
-        expect(playbackStats.stopFades).toContain(0);
-        expect(coordinator.isBusy()).toBe(false);
+        expect(harness.character.getState()).toBe("IDLE");
+        expect(harness.facialStats.clearCalls).toBeGreaterThanOrEqual(1);
+        expect(harness.playbackStats.stopFades).toContain(0);
+        expect(harness.calls[1].url).toBe(`${API_BASE}/api/conversation/reset`);
+        expect(harness.coordinator.isBusy()).toBe(false);
     });
 
-    it("reports busy only while a turn is in flight", async () => {
-        const { coordinator, character, fireEnded } = createHarness({
-            responses: [jsonResponse(turnPayload())],
+    it("reports busy only while a streamed turn is in flight", async () => {
+        const harness = createHarness({
+            responses: [
+                ndjsonResponse([
+                    chunkEvent(0, "Long speech."),
+                    doneEvent({ text: "Long speech." }),
+                ]),
+            ],
         });
-        character.visitorSpeechStarted();
+        harness.character.visitorSpeechStarted();
 
-        const submission = coordinator.submitUtterance("hi");
-        expect(coordinator.isBusy()).toBe(true);
+        const submission = harness.coordinator.submitUtterance("hi");
+        expect(harness.coordinator.isBusy()).toBe(true);
 
         await flushMicrotasks();
-        expect(coordinator.isBusy()).toBe(true);
+        expect(harness.coordinator.isBusy()).toBe(true);
 
-        fireEnded();
+        harness.finishAll();
         await submission;
-        expect(coordinator.isBusy()).toBe(false);
+        expect(harness.coordinator.isBusy()).toBe(false);
     });
 
     it("calls the global fetch as a bare function, not as a method (browser Illegal invocation guard)", async () => {
         const receivers: unknown[] = [];
         const stub = async function (this: unknown): Promise<Response> {
             receivers.push(this);
-            return jsonResponse(turnPayload({ degraded: true, audioWavBase64: null, track: null }));
+            return ndjsonResponse([
+                chunkEvent(0, "Silent reply.", false),
+                doneEvent({ text: "Silent reply.", degraded: true }),
+            ]);
         };
         vi.stubGlobal("fetch", stub);
         try {
@@ -410,6 +539,7 @@ describe("ConversationCoordinator", () => {
                 facialAnimation,
                 logger,
             });
+            character.visitorSpeechStarted();
 
             await coordinator.submitUtterance("hello");
 

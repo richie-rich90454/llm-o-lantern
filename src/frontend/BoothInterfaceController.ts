@@ -74,6 +74,8 @@ export class BoothInterfaceController {
     private backendStatus = "checking";
     private diagnosticsSnapshot = emptyDiagnostics("checking");
     private errorHideTimer: number | null = null;
+    private characterSubtitleText = "";
+    private visitorSubtitleText = "";
     private healthTimer: number | null = null;
     private backendErrorShown = false;
 
@@ -145,13 +147,46 @@ export class BoothInterfaceController {
         document.body.dataset.state = state;
     }
 
+    /**
+     * Renders subtitles word by word: while a reply streams in, only the new
+     * words fly in; a fresh line cascades as a whole. Each word is animated
+     * independently so text feels alive rather than pasted on.
+     */
     showSubtitle(role: "visitor" | "character", text: string): void {
+        const element = role === "visitor" ? this.subtitleVisitor : this.subtitleCharacter;
+        const previous = role === "visitor" ? this.visitorSubtitleText : this.characterSubtitleText;
         if (role === "visitor") {
-            this.subtitleVisitor.textContent = text;
+            this.visitorSubtitleText = text;
         } else {
-            this.subtitleCharacter.textContent = text;
+            this.characterSubtitleText = text;
         }
         this.subtitles.hidden = !this.dependencies.publicConfig.booth.subtitlesEnabled;
+        if (text === previous) {
+            return;
+        }
+        if (previous !== "" && text.startsWith(previous)) {
+            this.appendWords(element, text.slice(previous.length).trimStart(), 0);
+            return;
+        }
+        element.replaceChildren();
+        this.appendWords(element, text, 1);
+    }
+
+    private appendWords(element: HTMLElement, text: string, staggerBase: number): void {
+        const words = text.split(/\s+/).filter((word) => word !== "");
+        for (let index = 0; index < words.length; index += 1) {
+            const word = words[index];
+            const span = document.createElement("span");
+            span.className = "word";
+            span.textContent = word;
+            const delay = Math.min((staggerBase + index) * 38, 420);
+            span.style.animationDelay = `${delay}ms`;
+            element.append(span, document.createTextNode(" "));
+        }
+        // Bound DOM growth across a long reply.
+        while (element.childNodes.length > 260) {
+            element.firstChild?.remove();
+        }
     }
 
     showError(message: string): void {
@@ -268,6 +303,10 @@ export class BoothInterfaceController {
 
     private handleReset(): void {
         const { conversation, speechInput, characterController } = this.dependencies;
+        this.characterSubtitleText = "";
+        this.visitorSubtitleText = "";
+        this.subtitleVisitor.replaceChildren();
+        this.subtitleCharacter.replaceChildren();
         void conversation.reset().then(() => {
             if (speechInput.isListening() && characterController.getState() === "IDLE") {
                 characterController.visitorSpeechStarted();

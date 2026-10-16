@@ -11,6 +11,7 @@ import { ExpressionController } from "../animation/ExpressionController";
 import { FacialAnimationController } from "../animation/FacialAnimationController";
 import { SceneController } from "./SceneController";
 import { CharacterRenderer } from "./CharacterRenderer";
+import { CharacterEffectsController } from "./CharacterEffectsController";
 import { BoothInterfaceController } from "./BoothInterfaceController";
 import {
     PumpkinModelPlugin,
@@ -55,7 +56,7 @@ async function bootstrap(): Promise<void> {
         const overlay = document.getElementById("start-overlay");
         if (overlay) {
             overlay.textContent =
-                "The booth backend is not reachable. Start it with npm run dev:server (or npm run dev).";
+                "The booth backend is not reachable. Start it with pnpm run dev:server (or pnpm run dev).";
         }
         return;
     }
@@ -85,6 +86,8 @@ async function bootstrap(): Promise<void> {
     const renderer = new CharacterRenderer(requireElement("scene-host"), sceneController);
     const model = modelPlugin.createModel();
     sceneController.addCharacter(model);
+    const effects = new CharacterEffectsController();
+    sceneController.addCharacter(effects.getRoot());
 
     const facialAnimation = new FacialAnimationController({
         getPlaybackSeconds: () => audioPlayback.getPlaybackSeconds(),
@@ -157,11 +160,13 @@ async function bootstrap(): Promise<void> {
     characterController.setListener((state) => {
         booth.updateState(state);
         expression.setBehavior(state);
+        effects.setCharacterState(state);
     });
 
     renderer.onFrame((dtSeconds) => {
         mixer.composeInto(dtSeconds, facialState);
         modelPlugin.applyFacialState(facialState, dtSeconds);
+        effects.update(dtSeconds, facialState);
     });
 }
 

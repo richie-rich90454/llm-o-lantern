@@ -310,6 +310,39 @@ describe("RemoteDialoguePlugin", () => {
         expect(response.text).toBe('{"text":"thought about it"}');
     });
 
+    it("refuses to speak when only prose reasoning remains and content is empty", async () => {
+        queueFetch([
+            () =>
+                new Response(
+                    JSON.stringify({
+                        choices: [
+                            {
+                                message: {
+                                    role: "assistant",
+                                    content: null,
+                                    reasoning:
+                                        "The user probably wants a joke, so maybe I could say something clever here.",
+                                },
+                            },
+                        ],
+                    }),
+                    { status: 200 },
+                ),
+        ]);
+        const plugin = new RemoteDialoguePlugin(
+            makeRemoteConfig({ preset: "openrouter" }),
+            logger,
+            {
+                OPENROUTER_API_KEY: "k",
+            },
+        );
+        await plugin.initialize();
+
+        await expect(
+            plugin.generateResponse(makeDialogueRequest(), new AbortController().signal),
+        ).rejects.toThrow(/unexpected response shape/);
+    });
+
     it("joins multimodal content parts and rejects truly empty messages with a shape report", async () => {
         const stub = queueFetch([
             () =>

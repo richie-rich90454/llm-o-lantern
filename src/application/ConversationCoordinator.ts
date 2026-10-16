@@ -47,27 +47,40 @@ type ConversationCoordinatorDependencies = {
     onError?: (message: string) => void;
 };
 
-type TurnResponse = {
+type TurnStreamDone = {
+    type: "done";
     turnId: number;
     text: string;
     emotion: string;
     delivery: string;
-    audioWavBase64: string | null;
-    sampleRate: number | null;
-    durationSeconds: number | null;
-    track: FacialAnimationTrackJson | null;
     timingSource: string | null;
     degraded: boolean;
     dialogueFallback: boolean;
+    providers: { dialogue: string; speech: string };
     latency: {
         dialogueMs: number;
         synthesisMs: number;
         timingMs: number;
         lipSyncMs: number;
         totalMs: number;
+        firstChunkMs: number;
     };
-    providers: { dialogue: string; speech: string };
 };
+
+type TurnStreamEvent =
+    | {
+          type: "chunk";
+          index: number;
+          text: string;
+          audioWavBase64: string | null;
+          sampleRate: number | null;
+          durationSeconds: number | null;
+          track: FacialAnimationTrackJson | null;
+          timingSource: string | null;
+      }
+    | TurnStreamDone
+    | { type: "stale"; turnId: number }
+    | { type: "error"; code: string; message: string };
 
 /**
  * Coordinates one visitor turn end to end on the browser side: submit the
@@ -108,14 +121,37 @@ export class ConversationCoordinator {
         this.activeAbort = abort;
         this.busy = true;
 
-        const { characterController, logger } = this.dependencies;
+        const { characterController, logger, audioPlayback, facialAnimation } = this.dependencies;
         characterController.turnSubmitted();
         this.dependencies.onUtteranceSubmitted?.(trimmed);
 
         const t0 = performance.now();
+        const tracks: (FacialAnimationTrack | null)[] = [];
+        let subtitleText = "";
+        let audioChunks = 0;
+        let audioSeconds = 0;
+        let firstAudibleMs = -1;
+        let doneEvent: TurnStreamDone | null = null;
+
+        const drained = new Promise<void>((resolve) => {
+            this.resolvePlaybackEnd = resolve;
+            audioPlayback.onQueueDrained(() => resolve());
+        });
+        audioPlayback.onChunkStarted((index) => {
+            const track = tracks[index] ?? null;
+            if (track !== null) {
+                facialAnimation.prepare(track);
+            } else {
+                facialAnimation.clear();
+            }
+            if (index === 0 && firstAudibleMs < 0) {
+                firstAudibleMs = Math.round(performance.now() - t0);
+            }
+        });
+
         try {
             const response = await this.fetchImpl(
-                `${this.dependencies.apiBaseUrl}/api/conversation/turn`,
+                `${this.dependencies.apiBaseUrl}/api/conversation/turn-stream`,
                 {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -138,57 +174,87 @@ export class ConversationCoordinator {
                         `The booth backend rejected the turn with HTTP ${response.status}`,
                 );
             }
+            if (response.body === null) {
+                throw new Error("The booth backend returned an empty reply stream");
+            }
 
-            const payload = validateTurnResponse(await response.json());
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            let playbackStarted = false;
+            let streamFinished = false;
+            while (!streamFinished) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    break;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                let newlineIndex = buffer.indexOf("\n");
+                while (newlineIndex !== -1) {
+                    const line = buffer.slice(0, newlineIndex).trim();
+                    buffer = buffer.slice(newlineIndex + 1);
+                    newlineIndex = buffer.indexOf("\n");
+                    if (line === "") {
+                        continue;
+                    }
+                    const event = parseStreamEvent(line);
+                    if (event === null) {
+                        continue;
+                    }
+                    if (turnId !== this.currentTurnId || abort.signal.aborted) {
+                        return;
+                    }
+                    if (event.type === "chunk") {
+                        subtitleText =
+                            subtitleText === "" ? event.text : `${subtitleText} ${event.text}`;
+                        this.dependencies.onSpokenText?.(subtitleText);
+                        if (event.audioWavBase64 !== null) {
+                            await audioPlayback.enqueue(decodeBase64(event.audioWavBase64));
+                            tracks[event.index] = event.track
+                                ? FacialAnimationTrack.fromJson(event.track)
+                                : null;
+                            audioChunks += 1;
+                            audioSeconds += event.durationSeconds ?? 0;
+                            if (!playbackStarted) {
+                                playbackStarted = true;
+                                characterController.speechPrepared();
+                                audioPlayback.playQueue();
+                                characterController.playbackStarted();
+                            } else if (!audioPlayback.isPlaying()) {
+                                // A gap appeared between chunks; resume eagerly.
+                                audioPlayback.playQueue();
+                            }
+                        }
+                    } else if (event.type === "done") {
+                        doneEvent = event;
+                    } else if (event.type === "stale") {
+                        return;
+                    } else if (event.type === "error") {
+                        throw new Error(event.message);
+                    }
+                }
+            }
+
             if (turnId !== this.currentTurnId || abort.signal.aborted) {
                 return;
             }
 
-            if (payload.degraded || payload.audioWavBase64 === null) {
-                // Subtitle-only mode: no audio arrived, so the character holds a
-                // silent pose through the normal state sequence.
-                this.dependencies.onSpokenText?.(payload.text);
+            if (audioChunks === 0) {
+                // Subtitle-only turn: no chunk produced audio.
                 characterController.speechPrepared();
                 characterController.playbackStarted();
                 characterController.playbackFinished();
-                this.finishTurn(payload, 0);
+                this.finishStreamedTurn(doneEvent, subtitleText, 0, 0);
                 return;
             }
 
-            const wavBytes = decodeBase64(payload.audioWavBase64);
-            const audioPlayback = this.dependencies.audioPlayback;
-            await audioPlayback.prepare(wavBytes);
-            if (turnId !== this.currentTurnId || abort.signal.aborted) {
-                return;
-            }
-
-            const facialAnimation = this.dependencies.facialAnimation;
-            const track = payload.track ? FacialAnimationTrack.fromJson(payload.track) : null;
-            if (track) {
-                facialAnimation.prepare(track);
-            } else {
-                facialAnimation.clear();
-            }
-
-            characterController.speechPrepared();
-            const playbackEnded = new Promise<void>((resolve) => {
-                this.resolvePlaybackEnd = resolve;
-                audioPlayback.onEnded(() => resolve());
-            });
-            audioPlayback.play();
-            const endOfUtteranceToFirstAudibleMs = Math.round(performance.now() - t0);
-
-            characterController.playbackStarted();
-            this.dependencies.onSpokenText?.(payload.text);
-
-            await playbackEnded;
+            await drained;
             this.resolvePlaybackEnd = null;
             if (turnId !== this.currentTurnId) {
                 return;
             }
-
             characterController.playbackFinished();
-            this.finishTurn(payload, endOfUtteranceToFirstAudibleMs);
+            this.finishStreamedTurn(doneEvent, subtitleText, firstAudibleMs, audioSeconds);
         } catch (error) {
             if (abort.signal.aborted) {
                 return;
@@ -198,11 +264,43 @@ export class ConversationCoordinator {
             if (turnId === this.currentTurnId) {
                 this.busy = false;
                 this.activeAbort = null;
+                audioPlayback.stop(80);
+                facialAnimation.clear();
                 this.dependencies.onError?.(message);
                 characterController.turnFailed();
                 characterController.recoveryFinished();
             }
         }
+    }
+
+    private finishStreamedTurn(
+        doneEvent: TurnStreamDone | null,
+        subtitleText: string,
+        firstAudibleMs: number,
+        audioSeconds: number,
+    ): void {
+        this.busy = false;
+        this.activeAbort = null;
+        this.dependencies.onTurnCompleted?.({
+            turnId: doneEvent?.turnId ?? this.currentTurnId,
+            text: doneEvent?.text ?? subtitleText,
+            emotion: doneEvent?.emotion ?? "neutral",
+            delivery: doneEvent?.delivery ?? "normal",
+            timingSource: doneEvent?.timingSource ?? "unknown",
+            providerDialogue: doneEvent?.providers.dialogue ?? "unknown",
+            providerSpeech: doneEvent?.providers.speech ?? "none",
+            latency: {
+                dialogueMs: doneEvent?.latency.dialogueMs ?? 0,
+                synthesisMs: doneEvent?.latency.synthesisMs ?? 0,
+                timingMs: doneEvent?.latency.timingMs ?? 0,
+                lipSyncMs: doneEvent?.latency.lipSyncMs ?? 0,
+                totalMs: doneEvent?.latency.totalMs ?? 0,
+                endOfUtteranceToFirstAudibleMs: firstAudibleMs >= 0 ? firstAudibleMs : 0,
+            },
+            audioDurationSeconds: audioSeconds,
+            degraded: doneEvent?.degraded ?? false,
+            dialogueFallback: doneEvent?.dialogueFallback ?? false,
+        });
     }
 
     interrupt(): void {
@@ -242,31 +340,6 @@ export class ConversationCoordinator {
             });
         }
         this.dependencies.characterController.reset();
-    }
-
-    private finishTurn(payload: TurnResponse, endOfUtteranceToFirstAudibleMs: number): void {
-        this.busy = false;
-        this.activeAbort = null;
-        this.dependencies.onTurnCompleted?.({
-            turnId: payload.turnId,
-            text: payload.text,
-            emotion: payload.emotion,
-            delivery: payload.delivery,
-            timingSource: payload.timingSource ?? "unknown",
-            providerDialogue: payload.providers.dialogue,
-            providerSpeech: payload.providers.speech,
-            latency: {
-                dialogueMs: payload.latency.dialogueMs,
-                synthesisMs: payload.latency.synthesisMs,
-                timingMs: payload.latency.timingMs,
-                lipSyncMs: payload.latency.lipSyncMs,
-                totalMs: payload.latency.totalMs,
-                endOfUtteranceToFirstAudibleMs,
-            },
-            audioDurationSeconds: payload.durationSeconds ?? 0,
-            degraded: payload.degraded,
-            dialogueFallback: payload.dialogueFallback,
-        });
     }
 
     private async readErrorInfo(
@@ -318,78 +391,115 @@ function readRecord(source: Record<string, unknown>, key: string): Record<string
     return value as Record<string, unknown>;
 }
 
-function validateTurnResponse(value: unknown): TurnResponse {
+/** Runtime-validates one NDJSON line from the streamed turn endpoint. */
+function parseStreamEvent(line: string): TurnStreamEvent | null {
+    let value: unknown;
+    try {
+        value = JSON.parse(line);
+    } catch {
+        return null;
+    }
     if (typeof value !== "object" || value === null) {
-        throw new Error("The backend returned an unexpected response shape");
+        return null;
     }
     const record = value as Record<string, unknown>;
-    const turnId = readNumber(record, "turnId");
-    const text = readString(record, "text");
-    const emotion = readString(record, "emotion");
-    const delivery = readString(record, "delivery");
-    const degraded = record.degraded;
-    const dialogueFallback = record.dialogueFallback;
-    const providers = readRecord(record, "providers");
-    const latency = readRecord(record, "latency");
-    if (
-        turnId === null ||
-        text === null ||
-        emotion === null ||
-        delivery === null ||
-        typeof degraded !== "boolean" ||
-        typeof dialogueFallback !== "boolean" ||
-        providers === null ||
-        latency === null
-    ) {
-        throw new Error("The backend returned an unexpected response shape");
+    const type = record.type;
+    if (type === "chunk") {
+        const index = readNumber(record, "index");
+        const text = readString(record, "text");
+        if (index === null || text === null) {
+            return null;
+        }
+        const audioWavBase64 =
+            record.audioWavBase64 === null || record.audioWavBase64 === undefined
+                ? null
+                : readString(record, "audioWavBase64");
+        if (
+            record.audioWavBase64 !== null &&
+            record.audioWavBase64 !== undefined &&
+            audioWavBase64 === null
+        ) {
+            return null;
+        }
+        return {
+            type: "chunk",
+            index,
+            text,
+            audioWavBase64,
+            sampleRate: readNumber(record, "sampleRate"),
+            durationSeconds: readNumber(record, "durationSeconds"),
+            track: (record.track ?? null) as FacialAnimationTrackJson | null,
+            timingSource: record.timingSource === null ? null : readString(record, "timingSource"),
+        };
     }
-    const providerDialogue = readString(providers, "dialogue");
-    const providerSpeech = readString(providers, "speech");
-    const latencyValues = {
-        dialogueMs: readNumber(latency, "dialogueMs"),
-        synthesisMs: readNumber(latency, "synthesisMs"),
-        timingMs: readNumber(latency, "timingMs"),
-        lipSyncMs: readNumber(latency, "lipSyncMs"),
-        totalMs: readNumber(latency, "totalMs"),
-    };
-    if (
-        providerDialogue === null ||
-        providerSpeech === null ||
-        latencyValues.dialogueMs === null ||
-        latencyValues.synthesisMs === null ||
-        latencyValues.timingMs === null ||
-        latencyValues.lipSyncMs === null ||
-        latencyValues.totalMs === null
-    ) {
-        throw new Error("The backend returned an unexpected response shape");
+    if (type === "done") {
+        const turnId = readNumber(record, "turnId");
+        const text = readString(record, "text");
+        const emotion = readString(record, "emotion");
+        const delivery = readString(record, "delivery");
+        const providers = readRecord(record, "providers");
+        const latency = readRecord(record, "latency");
+        if (
+            turnId === null ||
+            text === null ||
+            emotion === null ||
+            delivery === null ||
+            providers === null ||
+            latency === null
+        ) {
+            return null;
+        }
+        const providerDialogue = readString(providers, "dialogue");
+        const providerSpeech = readString(providers, "speech");
+        const latencyValues = {
+            dialogueMs: readNumber(latency, "dialogueMs"),
+            synthesisMs: readNumber(latency, "synthesisMs"),
+            timingMs: readNumber(latency, "timingMs"),
+            lipSyncMs: readNumber(latency, "lipSyncMs"),
+            totalMs: readNumber(latency, "totalMs"),
+            firstChunkMs: readNumber(latency, "firstChunkMs"),
+        };
+        if (
+            providerDialogue === null ||
+            providerSpeech === null ||
+            latencyValues.dialogueMs === null ||
+            latencyValues.synthesisMs === null ||
+            latencyValues.timingMs === null ||
+            latencyValues.lipSyncMs === null ||
+            latencyValues.totalMs === null ||
+            latencyValues.firstChunkMs === null
+        ) {
+            return null;
+        }
+        return {
+            type: "done",
+            turnId,
+            text,
+            emotion,
+            delivery,
+            timingSource: record.timingSource === null ? null : readString(record, "timingSource"),
+            degraded: record.degraded === true,
+            dialogueFallback: record.dialogueFallback === true,
+            providers: { dialogue: providerDialogue, speech: providerSpeech },
+            latency: {
+                dialogueMs: latencyValues.dialogueMs,
+                synthesisMs: latencyValues.synthesisMs,
+                timingMs: latencyValues.timingMs,
+                lipSyncMs: latencyValues.lipSyncMs,
+                totalMs: latencyValues.totalMs,
+                firstChunkMs: latencyValues.firstChunkMs,
+            },
+        };
     }
-
-    const audioWavBase64 =
-        record.audioWavBase64 === null ? null : readString(record, "audioWavBase64");
-    const trackValue = record.track === null || record.track === undefined ? null : record.track;
-    if (record.audioWavBase64 !== null && audioWavBase64 === null) {
-        throw new Error("The backend returned an unexpected response shape");
+    if (type === "stale") {
+        return { type: "stale", turnId: readNumber(record, "turnId") ?? 0 };
     }
-
-    return {
-        turnId,
-        text,
-        emotion,
-        delivery,
-        audioWavBase64,
-        sampleRate: readNumber(record, "sampleRate"),
-        durationSeconds: readNumber(record, "durationSeconds"),
-        track: trackValue as FacialAnimationTrackJson | null,
-        timingSource: record.timingSource === null ? null : readString(record, "timingSource"),
-        degraded,
-        dialogueFallback,
-        latency: {
-            dialogueMs: latencyValues.dialogueMs,
-            synthesisMs: latencyValues.synthesisMs,
-            timingMs: latencyValues.timingMs,
-            lipSyncMs: latencyValues.lipSyncMs,
-            totalMs: latencyValues.totalMs,
-        },
-        providers: { dialogue: providerDialogue, speech: providerSpeech },
-    };
+    if (type === "error") {
+        const message = readString(record, "message");
+        if (message === null) {
+            return null;
+        }
+        return { type: "error", code: readString(record, "code") ?? "internal", message };
+    }
+    return null;
 }

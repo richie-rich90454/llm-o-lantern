@@ -1,6 +1,6 @@
 # llm-o-lantern
 
-A modular, local-first, conversational 3D jack-o'-lantern for a Halloween booth. It listens through a microphone, answers with an LLM, speaks with a neural voice, and drives a live 3D pumpkin face from the speech audio.
+A modular, local-first, conversational 3D jack-o'-lantern for a Halloween booth. It listens through a microphone, answers with an LLM that streams sentence by sentence (so it starts speaking while it is still thinking), speaks with a neural voice, and drives a live 3D pumpkin face from the speech audio — with soul-motes flowing into its face when it listens and embers puffing from its mouth when it speaks.
 
 Out of the box the dialogue provider is **OpenRouter** using the free `nvidia/nemotron-3.5-super-vl:free` model (paste your key into `.env`). Without a key the booth still runs and answers with the scripted fallback dialogue. Every provider is replaceable: local Ollama, a self-hosted llama.cpp server, any of the other remote presets, local Kokoro/Piper voices, and local Whisper speech recognition all plug into the same boundaries.
 
@@ -204,7 +204,7 @@ OpenRouter-specific provider errors are surfaced with their HTTP status and body
 
 - Start overlay: one click unlocks browser audio and the microphone. In auto-listen mode this is also the microphone permission moment.
 - State badge: the live character state - IDLE, LISTENING, THINKING, PREPARING_SPEECH, SPEAKING, INTERRUPTED, RECOVERING.
-- Subtitles: both sides of the conversation, so the booth works even when the room is too loud to hear it.
+- Subtitles: both sides of the conversation, so the booth works even when the room is too loud to hear it; reply words fly in as the pumpkin says them. Replies stream sentence by sentence, so speech begins as soon as the first sentence is ready; if a provider is slow to produce anything speakable, the scripted line answers within about three seconds instead of leaving silence.
 - Error banner: service and backend problems, auto-hiding after 8 seconds; the last 10 errors stay listed in the diagnostics panel.
 
 | Control       | Key        | Action                                             |

@@ -155,10 +155,10 @@ function isAbort(error: unknown, combined: AbortSignal): boolean {
 }
 
 /**
- * Reasoning models vary in where they put the answer. Prefer `content`
- * (string or multimodal parts array), fall back to `reasoning` so a model
- * that spent the whole token budget thinking still produces something usable
- * for the response processor to salvage.
+ * Reasoning models vary in where they put the answer. `content` (string or
+ * multimodal parts) is the reply. The `reasoning` field is the model's private
+ * chain of thought and must NEVER be spoken; it is only mined for a complete
+ * JSON reply object when the model dumped its final answer there.
  */
 function extractMessageText(message: OpenAiChatMessage): string | null {
     const content = message.content;
@@ -183,8 +183,30 @@ function extractMessageText(message: OpenAiChatMessage): string | null {
         }
     }
     const reasoning = message.reasoning;
-    if (typeof reasoning === "string" && reasoning.trim() !== "") {
-        return reasoning;
+    if (typeof reasoning === "string") {
+        return salvageJsonReplyFromReasoning(reasoning);
+    }
+    return null;
+}
+
+function salvageJsonReplyFromReasoning(reasoning: string): string | null {
+    const first = reasoning.indexOf("{");
+    const last = reasoning.lastIndexOf("}");
+    if (first === -1 || last <= first) {
+        return null;
+    }
+    const candidate = reasoning.slice(first, last + 1);
+    try {
+        const parsed: unknown = JSON.parse(candidate);
+        if (
+            typeof parsed === "object" &&
+            parsed !== null &&
+            typeof (parsed as Record<string, unknown>).text === "string"
+        ) {
+            return candidate;
+        }
+    } catch {
+        // the reasoning did not contain a complete reply object
     }
     return null;
 }
@@ -200,6 +222,59 @@ function describeMessageShape(message: OpenAiChatMessage): string {
                   : typeof message.content,
         reasoningType: message.reasoning === undefined ? "missing" : typeof message.reasoning,
     });
+}
+
+function joinContentParts(content: unknown): string | null {
+    if (typeof content === "string") {
+        return content;
+    }
+    if (!Array.isArray(content)) {
+        return null;
+    }
+    const parts: string[] = [];
+    for (const part of content) {
+        if (
+            typeof part === "object" &&
+            part !== null &&
+            (part as Record<string, unknown>).type === "text" &&
+            typeof (part as Record<string, unknown>).text === "string"
+        ) {
+            parts.push((part as Record<string, unknown>).text as string);
+        }
+    }
+    return parts.length > 0 ? parts.join("") : null;
+}
+
+/**
+ * Extracts one SSE data line's text delta. Reasoning deltas are deliberately
+ * ignored: chain-of-thought must never reach the speaker.
+ */
+function parseSseLine(line: string): string | "done" | null {
+    if (!line.startsWith("data:")) {
+        return null;
+    }
+    const payloadText = line.slice(5).trim();
+    if (payloadText === "[DONE]") {
+        return "done";
+    }
+    try {
+        const parsed: unknown = JSON.parse(payloadText);
+        if (typeof parsed !== "object" || parsed === null) {
+            return null;
+        }
+        const choices = (parsed as Record<string, unknown>).choices;
+        if (!Array.isArray(choices) || choices.length === 0) {
+            return null;
+        }
+        const delta = (choices[0] as Record<string, unknown>).delta;
+        if (typeof delta !== "object" || delta === null) {
+            return null;
+        }
+        const content = joinContentParts((delta as Record<string, unknown>).content);
+        return content !== null && content !== "" ? content : null;
+    } catch {
+        return null;
+    }
 }
 
 function buildStructuredOutputDirective(request: DialogueRequest): string {
@@ -353,11 +428,119 @@ export class RemoteDialoguePlugin {
         return new DialogueResponse(content, "neutral", "normal", this.id);
     }
 
-    private async requestOpenAi(
-        resolved: ResolvedRemoteSettings,
+    /**
+     * Streams the raw model output (usually JSON being written) one text delta
+     * at a time so speech can begin before the model finishes. Only the
+     * OpenAI-style wire format streams; reasoning deltas are never yielded.
+     */
+    async *streamResponseText(
         request: DialogueRequest,
         signal: AbortSignal,
-    ): Promise<string> {
+    ): AsyncGenerator<string> {
+        const resolved = this.resolved;
+        if (resolved === null) {
+            throw new Error("Remote dialogue plugin is not initialized");
+        }
+        if (resolved.apiKeyEnv !== null && resolved.apiKey === null) {
+            throw new Error(
+                `Remote dialogue provider "${resolved.preset.label}" is not configured: set ${resolved.apiKeyEnv} ` +
+                    "(for example in .env) and restart the booth",
+            );
+        }
+        if (resolved.style !== "openai") {
+            throw new Error(
+                `Remote provider "${resolved.preset.label}" does not support streaming`,
+            );
+        }
+
+        const combined = AbortSignal.any([signal, AbortSignal.timeout(this.config.timeoutMs)]);
+        const controller = new AbortController();
+        const onAbort = (): void => {
+            controller.abort();
+        };
+        combined.addEventListener("abort", onAbort, { once: true });
+
+        const { url, headers, payload } = this.buildOpenAiRequest(resolved, request);
+        payload.stream = true;
+        try {
+            let response: Response;
+            try {
+                response = await fetch(url, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify(payload),
+                    signal: controller.signal,
+                });
+            } catch (error) {
+                if (combined.aborted) {
+                    throw error;
+                }
+                if (controller.signal.aborted) {
+                    return;
+                }
+                throw new Error(
+                    `Remote provider "${resolved.preset.label}" is unreachable at ${resolved.baseUrl}`,
+                );
+            }
+            if (!response.ok || response.body === null) {
+                const body = await response.text().catch(() => "");
+                throw new Error(
+                    `Remote provider "${resolved.preset.label}" responded with HTTP ${response.status}: ${bodyExcerpt(body)}`,
+                );
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            try {
+                for (;;) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        break;
+                    }
+                    buffer += decoder.decode(value, { stream: true });
+                    let newlineIndex = buffer.indexOf("\n");
+                    while (newlineIndex !== -1) {
+                        const line = buffer.slice(0, newlineIndex).trim();
+                        buffer = buffer.slice(newlineIndex + 1);
+                        const delta = parseSseLine(line);
+                        if (delta === "done") {
+                            return;
+                        }
+                        if (delta !== null) {
+                            yield delta;
+                        }
+                        newlineIndex = buffer.indexOf("\n");
+                    }
+                }
+            } catch (error) {
+                if (combined.aborted) {
+                    throw error;
+                }
+                if (controller.signal.aborted) {
+                    return;
+                }
+                throw new Error(
+                    `Remote provider "${resolved.preset.label}" stream ended unexpectedly: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`,
+                );
+            }
+        } finally {
+            combined.removeEventListener("abort", onAbort);
+            controller.abort();
+        }
+    }
+
+    /*
+     * Reminder for future edits: extractMessageText prefers content, then
+     * mines the reasoning field only for a complete JSON reply object.
+     */
+
+    private buildOpenAiRequest(
+        resolved: ResolvedRemoteSettings,
+        request: DialogueRequest,
+    ): { url: string; headers: Record<string, string>; payload: Record<string, unknown> } {
         const url = `${resolved.baseUrl}/chat/completions`;
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (resolved.apiKey !== null) {
@@ -367,7 +550,6 @@ export class RemoteDialoguePlugin {
             headers["HTTP-Referer"] = "http://localhost";
             headers["X-Title"] = "llm-o-lantern";
         }
-
         const payload: Record<string, unknown> = {
             model: resolved.model,
             messages: [
@@ -380,6 +562,15 @@ export class RemoteDialoguePlugin {
         if (this.config.useJsonResponseFormat) {
             payload.response_format = { type: "json_object" };
         }
+        return { url, headers, payload };
+    }
+
+    private async requestOpenAi(
+        resolved: ResolvedRemoteSettings,
+        request: DialogueRequest,
+        signal: AbortSignal,
+    ): Promise<string> {
+        const { url, headers, payload } = this.buildOpenAiRequest(resolved, request);
 
         let response = await this.postJson(url, headers, payload, resolved, signal);
         if (response.status === 400 && this.config.useJsonResponseFormat) {

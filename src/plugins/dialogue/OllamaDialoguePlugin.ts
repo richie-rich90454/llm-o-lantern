@@ -136,4 +136,114 @@ export class OllamaDialoguePlugin {
         }
         return new DialogueResponse(content, "neutral", "normal", this.id);
     }
+
+    /**
+     * Streams the raw model output (NDJSON, one JSON object per line) so
+     * speech can begin before the model finishes. Only assistant content is
+     * yielded.
+     */
+    async *streamResponseText(
+        request: DialogueRequest,
+        signal: AbortSignal,
+    ): AsyncGenerator<string> {
+        const combined = AbortSignal.any([signal, AbortSignal.timeout(this.config.timeoutMs)]);
+        const controller = new AbortController();
+        const onAbort = (): void => {
+            controller.abort();
+        };
+        combined.addEventListener("abort", onAbort, { once: true });
+
+        try {
+            let response: Response;
+            try {
+                response = await fetch(`${this.config.baseUrl}/api/chat`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        model: this.config.model,
+                        messages: buildMessages(request),
+                        stream: true,
+                        format: this.config.structuredOutput ? "json" : undefined,
+                        options: {
+                            temperature: this.config.temperature,
+                            num_predict: this.config.maxTokens,
+                        },
+                        keep_alive: this.config.keepAlive,
+                    }),
+                    signal: controller.signal,
+                });
+            } catch (error) {
+                if (combined.aborted) {
+                    throw error;
+                }
+                if (controller.signal.aborted) {
+                    return;
+                }
+                throw new Error(
+                    `Ollama is unreachable at ${this.config.baseUrl}. Is "ollama serve" running and the model "${this.config.model}" pulled?`,
+                );
+            }
+            if (!response.ok || response.body === null) {
+                const body = await response.text().catch(() => "");
+                throw new Error(
+                    `Ollama responded with HTTP ${response.status}: ${bodyExcerpt(body)}`,
+                );
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            try {
+                for (;;) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        break;
+                    }
+                    buffer += decoder.decode(value, { stream: true });
+                    let newlineIndex = buffer.indexOf("\n");
+                    while (newlineIndex !== -1) {
+                        const line = buffer.slice(0, newlineIndex).trim();
+                        buffer = buffer.slice(newlineIndex + 1);
+                        if (line !== "") {
+                            const content = parseOllamaStreamLine(line);
+                            if (content !== null) {
+                                yield content;
+                            }
+                        }
+                        newlineIndex = buffer.indexOf("\n");
+                    }
+                }
+            } catch (error) {
+                if (combined.aborted) {
+                    throw error;
+                }
+                if (controller.signal.aborted) {
+                    return;
+                }
+                throw new Error(
+                    `Ollama stream ended unexpectedly: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+        } finally {
+            combined.removeEventListener("abort", onAbort);
+            controller.abort();
+        }
+    }
+}
+
+function parseOllamaStreamLine(line: string): string | null {
+    try {
+        const parsed: unknown = JSON.parse(line);
+        if (typeof parsed !== "object" || parsed === null) {
+            return null;
+        }
+        const message = (parsed as Record<string, unknown>).message;
+        if (typeof message !== "object" || message === null) {
+            return null;
+        }
+        const content = (message as Record<string, unknown>).content;
+        return typeof content === "string" && content !== "" ? content : null;
+    } catch {
+        return null;
+    }
 }

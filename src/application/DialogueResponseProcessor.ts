@@ -85,6 +85,23 @@ function salvageTextField(content: string): string | null {
     return null;
 }
 
+/**
+ * Detects the model's private analysis leaking into the spoken text (for
+ * example "The user is asking... Let's parse it..."). Such text must never
+ * reach the speaker; the caller falls back to a scripted reply instead.
+ */
+const INTERNAL_REASONING_PATTERNS = [
+    /^the (user|visitor) (is asking|asked|wants|wrote|said)\b/i,
+    /\blet'?s (parse|analyze|analyse|dissect|unpack|break (it|this|that) down)\b/i,
+    /^analysis\s*[:]/i,
+    /\bthis is (a bit )?(ambiguous|wordplay-heavy)\b/i,
+    /^\s*(we|i) (need|should|must) to (respond|answer|craft|reply|produce)\b/i,
+];
+
+export function looksLikeInternalReasoning(text: string): boolean {
+    return INTERNAL_REASONING_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 export class DialogueResponseProcessor {
     private readonly configuration: ApplicationConfiguration;
     private readonly logger: ApplicationLogger;
@@ -156,6 +173,12 @@ export class DialogueResponseProcessor {
 
         if (text === "") {
             throw new Error("Dialogue response contained no usable text");
+        }
+        if (looksLikeInternalReasoning(text)) {
+            this.logger.warn("Dialogue reply contained internal reasoning and was rejected", {
+                providerId: rawResponse.providerId,
+            });
+            throw new Error("Dialogue response contained internal reasoning, not a spoken reply");
         }
 
         return new DialogueResponse(
