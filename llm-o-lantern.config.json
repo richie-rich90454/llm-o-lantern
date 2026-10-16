@@ -31,7 +31,7 @@
             "model": null,
             "apiKeyEnv": null,
             "temperature": 0.8,
-            "maxTokens": 800,
+            "maxTokens": 1500,
             "timeoutMs": 30000,
             "useJsonResponseFormat": true,
             "acknowledgeRemoteProcessing": true

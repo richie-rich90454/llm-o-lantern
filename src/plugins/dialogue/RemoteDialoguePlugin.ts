@@ -246,8 +246,10 @@ function joinContentParts(content: unknown): string | null {
 }
 
 /**
- * Extracts one SSE data line's text delta. Reasoning deltas are deliberately
- * ignored: chain-of-thought must never reach the speaker.
+ * Extracts one SSE data line's text delta. Content deltas yield their text.
+ * Reasoning-only deltas yield an empty string: the reasoning itself is never
+ * spoken, but the empty yield tells the caller the stream is alive, so a
+ * thinking model is not mistaken for a dead connection.
  */
 function parseSseLine(line: string): string | "done" | null {
     if (!line.startsWith("data:")) {
@@ -271,7 +273,14 @@ function parseSseLine(line: string): string | "done" | null {
             return null;
         }
         const content = joinContentParts((delta as Record<string, unknown>).content);
-        return content !== null && content !== "" ? content : null;
+        if (content !== null && content !== "") {
+            return content;
+        }
+        const reasoning = (delta as Record<string, unknown>).reasoning;
+        if (typeof reasoning === "string" && reasoning !== "") {
+            return "";
+        }
+        return null;
     } catch {
         return null;
     }

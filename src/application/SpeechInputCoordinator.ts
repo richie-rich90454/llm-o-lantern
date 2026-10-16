@@ -21,8 +21,10 @@ type SpeechInputCoordinatorDependencies = {
 
 const STT_SAMPLE_RATE = 16000;
 const MIN_UTTERANCE_SECONDS = 0.25;
-const MIN_PARTIAL_SECONDS = 0.7;
-const DEFAULT_PARTIAL_INTERVAL_MS = 900;
+const MIN_PARTIAL_SECONDS = 0.6;
+// Partials land roughly every third of a second (plus whisper's own speed),
+// so visitor subtitles feel live while they are still talking.
+const DEFAULT_PARTIAL_INTERVAL_MS = 300;
 // While the character is audible, a visitor must clearly out-shout the
 // speaker for a barge-in; this keeps residual echo from self-interrupting.
 const BARGE_IN_THRESHOLD_SCALE = 1.6;

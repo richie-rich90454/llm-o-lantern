@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ApplicationConfiguration } from "../../src/core/ApplicationConfiguration";
 import type { PluginSelection } from "../../src/core/ApplicationConfiguration";
-import { PluginManager, PluginRegistry } from "../../src/core/PluginManager";
+import { PluginManager, PluginRegistry, type PluginLike } from "../../src/core/PluginManager";
 import { ConversationSessionManager } from "../../src/application/ConversationSessionManager";
 import { DialogueResponseProcessor } from "../../src/application/DialogueResponseProcessor";
 import { SpeechTimingProcessor } from "../../src/animation/SpeechTimingProcessor";
@@ -218,6 +218,100 @@ class FakeFlakyStreamingDialoguePlugin {
             yield this.jsonText.slice(index, index + pieceSize);
         }
     }
+}
+
+/** Sends reasoning-style activity keep-alives before any speakable text. */
+class FakeDrippingStreamingDialoguePlugin {
+    readonly id = "dialogue.dripping";
+    readonly version = "1.0.0";
+    readonly category = "dialogue";
+
+    constructor(private readonly jsonText: string) {}
+
+    async initialize(): Promise<void> {}
+
+    async shutdown(): Promise<void> {}
+
+    async generateResponse(): Promise<DialogueResponse> {
+        return new DialogueResponse(this.jsonText, "neutral", "normal", this.id);
+    }
+
+    async *streamResponseText(): AsyncGenerator<string> {
+        for (let index = 0; index < 10; index += 1) {
+            await new Promise((resolveTick) => setTimeout(resolveTick, 40));
+            yield "";
+        }
+        const pieceSize = 8;
+        for (let index = 0; index < this.jsonText.length; index += pieceSize) {
+            yield this.jsonText.slice(index, index + pieceSize);
+        }
+    }
+}
+
+/** Connects but never sends anything at all. */
+class FakeSilentStreamingDialoguePlugin {
+    readonly id = "dialogue.silent";
+    readonly version = "1.0.0";
+    readonly category = "dialogue";
+
+    async initialize(): Promise<void> {}
+
+    async shutdown(): Promise<void> {}
+
+    async generateResponse(): Promise<DialogueResponse> {
+        return new DialogueResponse("", "neutral", "normal", this.id);
+    }
+
+    async *streamResponseText(): AsyncGenerator<string> {
+        await new Promise((resolveTick) => setTimeout(resolveTick, 600));
+    }
+}
+
+async function startStreamingServer(
+    dialoguePlugin: PluginLike,
+    streamTiming: { noDataMs?: number; patienceMs?: number },
+    withScripted = false,
+): Promise<{ server: Server; port: number }> {
+    const { logger } = createCapturingLogger();
+    const configuration = await ApplicationConfiguration.load({ environment: {} });
+    const registry = new PluginRegistry();
+    registry.add(dialoguePlugin.id, () => dialoguePlugin);
+    registry.add("personality.fake", () => new FakePersonalityPlugin());
+    registry.add("speech-synthesis.fake", () => new FakeSpeechSynthesisPlugin());
+    registry.add("lipsync.fake", () => new FakeLipSyncPlugin());
+    if (withScripted) {
+        registry.add("dialogue.scripted", (childLogger) => new ScriptedDialoguePlugin(childLogger));
+    }
+    const selection: PluginSelection = {
+        dialogue: dialoguePlugin.id,
+        personality: "personality.fake",
+        speechRecognition: null,
+        speechSynthesis: "speech-synthesis.fake",
+        lipSync: "lipsync.fake",
+        memory: null,
+        character: null,
+        microphone: null,
+        audioPlayback: null,
+        additional: withScripted ? ["dialogue.scripted"] : [],
+    };
+    const pluginManager = new PluginManager(selection, logger);
+    await pluginManager.loadFromRegistry(registry);
+    const routes = new ConversationRoutes({
+        configuration,
+        logger,
+        pluginManager,
+        sessionManager: new ConversationSessionManager(
+            null,
+            configuration.value.conversation,
+            logger,
+        ),
+        responseProcessor: new DialogueResponseProcessor(configuration, logger),
+        speechTimingProcessor: new SpeechTimingProcessor(logger),
+        streamTiming,
+    });
+    const server = createHttpServer(routes, configuration, logger);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return { server, port: (server.address() as AddressInfo).port };
 }
 
 type StreamLine = { type: string } & Record<string, unknown>;
@@ -451,6 +545,75 @@ describe("ApplicationCompositionRoot", () => {
 });
 
 describe("streamed turns (/api/conversation/turn-stream)", () => {
+    it("keeps waiting while a thinking model sends activity but no text yet", async () => {
+        const dripping = new FakeDrippingStreamingDialoguePlugin(
+            JSON.stringify({
+                text: "Patience pays. The pumpkin finally speaks.",
+                emotion: "amused",
+                delivery: "normal",
+            }),
+        );
+        const server = await startStreamingServer(dripping, {
+            noDataMs: 120,
+            patienceMs: 5000,
+        });
+        try {
+            const response = await fetch(
+                `http://127.0.0.1:${server.port}/api/conversation/turn-stream`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        sessionId: "drip-test-1ab",
+                        turnId: 1,
+                        text: "hello",
+                    }),
+                },
+            );
+            const lines = await readNdjson(response);
+            const chunks = lines.filter((line) => line.type === "chunk");
+            const done = lines.find((line) => line.type === "done");
+
+            expect(chunks.length).toBeGreaterThanOrEqual(1);
+            expect(String(chunks[0].text)).toContain("Patience pays");
+            expect(done?.dialogueFallback).toBe(false);
+        } finally {
+            await new Promise<void>((resolve) => server.server.close(() => resolve()));
+        }
+    });
+
+    it("aborts a fully silent stream and answers with the scripted line", async () => {
+        const silent = new FakeSilentStreamingDialoguePlugin();
+        const server = await startStreamingServer(
+            silent,
+            { noDataMs: 120, patienceMs: 5000 },
+            true,
+        );
+        try {
+            const response = await fetch(
+                `http://127.0.0.1:${server.port}/api/conversation/turn-stream`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        sessionId: "silent-test-1",
+                        turnId: 1,
+                        text: "hello",
+                    }),
+                },
+            );
+            const lines = await readNdjson(response);
+            const chunks = lines.filter((line) => line.type === "chunk");
+            const done = lines.find((line) => line.type === "done");
+
+            expect(chunks.length).toBeGreaterThanOrEqual(1);
+            expect(String(chunks[0].text)).toContain("new face in the candlelight");
+            expect(done?.dialogueFallback).toBe(true);
+        } finally {
+            await new Promise<void>((resolve) => server.server.close(() => resolve()));
+        }
+    });
+
     it("retries once when the provider fails before producing text, then streams for real", async () => {
         const flaky = new FakeFlakyStreamingDialoguePlugin(
             JSON.stringify({

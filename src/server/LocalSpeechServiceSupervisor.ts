@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { access } from "node:fs/promises";
+import { cpus } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { ApplicationConfiguration } from "../core/ApplicationConfiguration";
 import type { ApplicationLogger } from "../core/ApplicationLogger";
@@ -8,6 +9,9 @@ const READY_TIMEOUT_MS = 30000;
 const READY_POLL_MS = 500;
 const STOP_TIMEOUT_MS = 3000;
 const STDERR_TAIL_LINES = 40;
+// Whisper defaults to a conservative thread count; the booth machine has
+// cores to spare, and transcripts are part of the booth's response latency.
+const MAX_WHISPER_THREADS = 8;
 
 export function resolveWhisperPort(baseUrl: string): number | null {
     try {
@@ -111,7 +115,16 @@ export class LocalSpeechServiceSupervisor {
         this.logger.info("Starting local whisper.cpp server", { executablePath, modelPath, port });
         const child = spawn(
             executablePath,
-            ["-m", modelPath, "--host", "127.0.0.1", "--port", String(port)],
+            [
+                "-m",
+                modelPath,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                String(port),
+                "-t",
+                String(Math.min(MAX_WHISPER_THREADS, cpus().length)),
+            ],
             { cwd: dirname(executablePath), windowsHide: true },
         );
         this.child = child;

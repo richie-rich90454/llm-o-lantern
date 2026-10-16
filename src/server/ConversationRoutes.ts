@@ -102,6 +102,8 @@ type ConversationRoutesDependencies = {
     sessionManager: ConversationSessionManager;
     responseProcessor: DialogueResponseProcessor;
     speechTimingProcessor: SpeechTimingProcessor;
+    /** Stream watchdog tuning; tests inject small values. */
+    streamTiming?: { noDataMs?: number; patienceMs?: number };
 };
 
 type RecentError = {
@@ -125,6 +127,8 @@ export class ConversationRoutes {
     private readonly sessionManager: ConversationSessionManager;
     private readonly responseProcessor: DialogueResponseProcessor;
     private readonly speechTimingProcessor: SpeechTimingProcessor;
+    private readonly noDataMs: number;
+    private readonly patienceMs: number;
 
     private turnsCompleted = 0;
     private turnsFailed = 0;
@@ -148,6 +152,8 @@ export class ConversationRoutes {
         this.sessionManager = dependencies.sessionManager;
         this.responseProcessor = dependencies.responseProcessor;
         this.speechTimingProcessor = dependencies.speechTimingProcessor;
+        this.noDataMs = dependencies.streamTiming?.noDataMs ?? 4000;
+        this.patienceMs = dependencies.streamTiming?.patienceMs ?? 12000;
     }
 
     async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -691,24 +697,34 @@ export class ConversationRoutes {
                 const dialogueStart = Date.now();
                 const streamResponseText = dialogue.streamResponseText.bind(dialogue);
                 let fullRaw = "";
-                // If a reasoning-heavy model thinks for too long without any
-                // speakable text, the booth must not sit in silence: abort the
-                // upstream stream and answer with the scripted line instead.
-                const firstChunkDeadlineMs = 4500;
+                // Reasoning models think silently for several seconds before
+                // their first content delta. The watchdog therefore aborts on
+                // "no stream activity at all" (dead connection) rather than a
+                // raw wall-clock deadline, and allows a generous patience
+                // window while reasoning keep-alives keep arriving.
+                const noDataMs = this.noDataMs;
+                const patienceMs = this.patienceMs;
                 let deadlineFired = false;
                 let firstSentenceReceived = false;
+                let lastErrorMessage: string | null = null;
 
                 const attemptStream = async (): Promise<
                     "ok" | "retry" | "fallback" | "deadline" | "aborted"
                 > => {
                     const firstChunkAbort = new AbortController();
                     const streamSignal = AbortSignal.any([combined, firstChunkAbort.signal]);
-                    const deadlineTimer = setTimeout(() => {
-                        if (chunkIndex === 0 && !firstSentenceReceived) {
+                    const startedAt = Date.now();
+                    let lastActivityAt = Date.now();
+                    const watchdog = setInterval(() => {
+                        if (chunkIndex > 0 || firstSentenceReceived) {
+                            return;
+                        }
+                        const now = Date.now();
+                        if (now - lastActivityAt > noDataMs || now - startedAt > patienceMs) {
                             deadlineFired = true;
                             firstChunkAbort.abort();
                         }
-                    }, firstChunkDeadlineMs);
+                    }, 250);
                     try {
                         const dialogueRequest = new DialogueRequest({
                             sessionId,
@@ -725,12 +741,12 @@ export class ConversationRoutes {
                             streamResponseText(dialogueRequest, streamSignal),
                             (delta) => {
                                 fullRaw += delta;
+                                lastActivityAt = Date.now();
                             },
                         );
                         for await (const sentence of streamer.streamSentences(capturing)) {
                             if (!firstSentenceReceived) {
                                 firstSentenceReceived = true;
-                                clearTimeout(deadlineTimer);
                             }
                             if (looksLikeInternalReasoning(sentence)) {
                                 if (chunkIndex === 0) {
@@ -744,7 +760,7 @@ export class ConversationRoutes {
                             }
                             await emitChunk(sentence);
                         }
-                        return "ok";
+                        return deadlineFired ? "deadline" : "ok";
                     } catch (error) {
                         if (abortController.signal.aborted) {
                             return "aborted";
@@ -756,6 +772,7 @@ export class ConversationRoutes {
                             return "deadline";
                         }
                         const message = error instanceof Error ? error.message : String(error);
+                        lastErrorMessage = message;
                         if (chunkIndex > 0) {
                             this.logger.warn(
                                 "Dialogue stream failed mid-reply; keeping what was spoken",
@@ -770,7 +787,7 @@ export class ConversationRoutes {
                             message.includes("fetch failed");
                         return providerFailure ? "retry" : "fallback";
                     } finally {
-                        clearTimeout(deadlineTimer);
+                        clearInterval(watchdog);
                     }
                 };
 
@@ -778,7 +795,9 @@ export class ConversationRoutes {
                 if (outcome === "retry") {
                     // Transient provider errors (502s, resets) are common with
                     // free endpoints; give the provider a breath, then retry.
-                    this.logger.info("Dialogue stream failed; retrying once");
+                    this.logger.info("Dialogue stream failed; retrying once", {
+                        error: lastErrorMessage ?? "unknown",
+                    });
                     await new Promise((resolveDelay) => setTimeout(resolveDelay, 400));
                     deadlineFired = false;
                     firstSentenceReceived = false;
@@ -793,6 +812,12 @@ export class ConversationRoutes {
                 if (!streamedCleanly && chunkIndex === 0) {
                     this.logger.info(
                         "Dialogue stream produced no clean reply; answering with the scripted line",
+                        {
+                            reason:
+                                outcome === "deadline"
+                                    ? "no usable text within the stream watchdog window"
+                                    : (lastErrorMessage ?? "unknown provider failure"),
+                        },
                     );
                     const fallbackWorked = await runScriptedFallback();
                     if (!fallbackWorked) {
