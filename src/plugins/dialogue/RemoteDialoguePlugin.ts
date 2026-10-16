@@ -1,0 +1,388 @@
+import type { DialogueRemoteConfig } from "../../core/ApplicationConfiguration";
+import type { ApplicationLogger } from "../../core/ApplicationLogger";
+import type { DialogueRequest } from "../../data/DialogueRequest";
+import { DialogueResponse } from "../../data/DialogueResponse";
+
+export type RemoteProviderPreset = {
+  label: string;
+  baseUrl: string;
+  style: "openai" | "anthropic";
+  apiKeyEnv: string | null;
+  defaultModel: string;
+};
+
+export const REMOTE_PROVIDER_PRESETS: Record<string, RemoteProviderPreset> = {
+  openai: {
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    style: "openai",
+    apiKeyEnv: "OPENAI_API_KEY",
+    defaultModel: "gpt-4o-mini"
+  },
+  anthropic: {
+    label: "Anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    style: "anthropic",
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+    defaultModel: "claude-sonnet-4-5"
+  },
+  deepseek: {
+    label: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    style: "openai",
+    apiKeyEnv: "DEEPSEEK_API_KEY",
+    defaultModel: "deepseek-chat"
+  },
+  openrouter: {
+    label: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    style: "openai",
+    apiKeyEnv: "OPENROUTER_API_KEY",
+    defaultModel: "meta-llama/llama-3.3-70b-instruct"
+  },
+  groq: {
+    label: "Groq",
+    baseUrl: "https://api.groq.com/openai/v1",
+    style: "openai",
+    apiKeyEnv: "GROQ_API_KEY",
+    defaultModel: "llama-3.3-70b-versatile"
+  },
+  mistral: {
+    label: "Mistral",
+    baseUrl: "https://api.mistral.ai/v1",
+    style: "openai",
+    apiKeyEnv: "MISTRAL_API_KEY",
+    defaultModel: "mistral-small-latest"
+  },
+  together: {
+    label: "Together AI",
+    baseUrl: "https://api.together.xyz/v1",
+    style: "openai",
+    apiKeyEnv: "TOGETHER_API_KEY",
+    defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+  },
+  xai: {
+    label: "xAI",
+    baseUrl: "https://api.x.ai/v1",
+    style: "openai",
+    apiKeyEnv: "XAI_API_KEY",
+    defaultModel: "grok-3-mini"
+  },
+  perplexity: {
+    label: "Perplexity",
+    baseUrl: "https://api.perplexity.ai",
+    style: "openai",
+    apiKeyEnv: "PERPLEXITY_API_KEY",
+    defaultModel: "sonar"
+  },
+  fireworks: {
+    label: "Fireworks",
+    baseUrl: "https://api.fireworks.ai/inference/v1",
+    style: "openai",
+    apiKeyEnv: "FIREWORKS_API_KEY",
+    defaultModel: "accounts/fireworks/models/llama-v3p3-70b-instruct"
+  },
+  llamacpp: {
+    label: "llama.cpp (local)",
+    baseUrl: "http://127.0.0.1:8080/v1",
+    style: "openai",
+    apiKeyEnv: null,
+    defaultModel: "local-model"
+  },
+  vllm: {
+    label: "vLLM (local)",
+    baseUrl: "http://127.0.0.1:8000/v1",
+    style: "openai",
+    apiKeyEnv: null,
+    defaultModel: "local-model"
+  },
+  lmstudio: {
+    label: "LM Studio (local)",
+    baseUrl: "http://127.0.0.1:1234/v1",
+    style: "openai",
+    apiKeyEnv: null,
+    defaultModel: "local-model"
+  },
+  "ollama-openai": {
+    label: "Ollama (OpenAI-compatible)",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    style: "openai",
+    apiKeyEnv: null,
+    defaultModel: "llama3.2"
+  }
+};
+
+type ResolvedRemoteSettings = {
+  presetKey: string;
+  preset: RemoteProviderPreset;
+  baseUrl: string;
+  model: string;
+  apiKeyEnv: string | null;
+  apiKey: string | null;
+  style: "openai" | "anthropic";
+};
+
+type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+type OpenAiChatCompletion = {
+  choices?: Array<{ message?: { content?: unknown } }>;
+};
+
+type AnthropicMessagesResponse = {
+  content?: Array<{ type?: string; text?: unknown }>;
+};
+
+const MAX_BODY_EXCERPT = 200;
+
+function bodyExcerpt(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length <= MAX_BODY_EXCERPT ? trimmed : `${trimmed.slice(0, MAX_BODY_EXCERPT - 3)}...`;
+}
+
+function isAbort(error: unknown, combined: AbortSignal): boolean {
+  return combined.aborted || (error instanceof DOMException && error.name === "AbortError");
+}
+
+function buildStructuredOutputDirective(request: DialogueRequest): string {
+  return (
+    'Reply with a single JSON object: {"text": "...", "emotion": "...", "delivery": "..."} . ' +
+    `Use only these emotions: ${request.allowedEmotions.join(", ")} . ` +
+    `Use only these deliveries: ${request.allowedDeliveries.join(", ")} . ` +
+    `"text" must be at most ${request.maxResponseCharacters} characters, plain speech, no markdown.`
+  );
+}
+
+function buildSystemPrompt(request: DialogueRequest): string {
+  return `${request.instructions}\n\n${buildStructuredOutputDirective(request)}`;
+}
+
+function buildConversationMessages(request: DialogueRequest): ChatMessage[] {
+  return [
+    ...request.history.map(
+      (message): ChatMessage => ({
+        role: message.role === "visitor" ? "user" : "assistant",
+        content: message.text
+      })
+    ),
+    { role: "user", content: request.text }
+  ];
+}
+
+export class RemoteDialoguePlugin {
+  readonly id = "dialogue.remote";
+  readonly version = "1.0.0";
+  readonly category = "dialogue";
+
+  private readonly config: DialogueRemoteConfig;
+  private readonly logger: ApplicationLogger;
+  private readonly environment: Record<string, string | undefined>;
+  private resolved: ResolvedRemoteSettings | null = null;
+
+  constructor(config: DialogueRemoteConfig, logger: ApplicationLogger, environment: Record<string, string | undefined>) {
+    this.config = config;
+    this.logger = logger;
+    this.environment = environment;
+  }
+
+  async initialize(): Promise<void> {
+    const preset: RemoteProviderPreset | undefined = REMOTE_PROVIDER_PRESETS[this.config.preset];
+    if (preset === undefined) {
+      throw new Error(
+        `Unknown remote dialogue preset "${this.config.preset}". Known presets: ${Object.keys(REMOTE_PROVIDER_PRESETS).join(", ")}`
+      );
+    }
+    if (!this.config.acknowledgeRemoteProcessing) {
+      throw new Error("Remote dialogue requires dialogue.remote.acknowledgeRemoteProcessing: true in configuration");
+    }
+    const baseUrl = this.config.baseUrl ?? preset.baseUrl;
+    const model = this.config.model ?? preset.defaultModel;
+    const apiKeyEnv = this.config.apiKeyEnv ?? preset.apiKeyEnv;
+    let apiKey: string | null = null;
+    if (apiKeyEnv !== null) {
+      const value = this.environment[apiKeyEnv];
+      if (typeof value !== "string" || value.trim() === "") {
+        throw new Error(
+          `Remote dialogue provider "${this.config.preset}" needs its API key in environment variable ${apiKeyEnv}`
+        );
+      }
+      apiKey = value;
+    }
+    this.resolved = {
+      presetKey: this.config.preset,
+      preset,
+      baseUrl,
+      model,
+      apiKeyEnv,
+      apiKey,
+      style: preset.style
+    };
+    this.logger.info("Remote dialogue provider configured", { provider: preset.label, model, baseUrl });
+  }
+
+  async shutdown(): Promise<void> {}
+
+  async isAvailable(): Promise<boolean> {
+    const resolved = this.resolved;
+    if (resolved === null) {
+      return false;
+    }
+    if (resolved.apiKeyEnv !== null) {
+      return resolved.apiKey !== null;
+    }
+    try {
+      await fetch(`${resolved.baseUrl}/models`, { signal: AbortSignal.timeout(1500) });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  getDisplayName(): string {
+    const resolved = this.resolved;
+    if (resolved === null) {
+      return "Remote (not initialized)";
+    }
+    return `${resolved.preset.label} · ${resolved.model}`;
+  }
+
+  async generateResponse(request: DialogueRequest, signal: AbortSignal): Promise<DialogueResponse> {
+    const resolved = this.resolved;
+    if (resolved === null) {
+      throw new Error("Remote dialogue plugin is not initialized");
+    }
+    const combined = AbortSignal.any([signal, AbortSignal.timeout(this.config.timeoutMs)]);
+    const content =
+      resolved.style === "anthropic"
+        ? await this.requestAnthropic(resolved, request, combined)
+        : await this.requestOpenAi(resolved, request, combined);
+    return new DialogueResponse(content, "neutral", "normal", this.id);
+  }
+
+  private async requestOpenAi(
+    resolved: ResolvedRemoteSettings,
+    request: DialogueRequest,
+    signal: AbortSignal
+  ): Promise<string> {
+    const url = `${resolved.baseUrl}/chat/completions`;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (resolved.apiKey !== null) {
+      headers.Authorization = `Bearer ${resolved.apiKey}`;
+    }
+    if (resolved.presetKey === "openrouter") {
+      headers["HTTP-Referer"] = "http://localhost";
+      headers["X-Title"] = "llm-o-lantern";
+    }
+
+    const payload: Record<string, unknown> = {
+      model: resolved.model,
+      messages: [{ role: "system", content: buildSystemPrompt(request) }, ...buildConversationMessages(request)],
+      temperature: this.config.temperature,
+      max_tokens: this.config.maxTokens
+    };
+    if (this.config.useJsonResponseFormat) {
+      payload.response_format = { type: "json_object" };
+    }
+
+    let response = await this.postJson(url, headers, payload, resolved, signal);
+    if (response.status === 400 && this.config.useJsonResponseFormat) {
+      const errorBody = await response.text();
+      if (errorBody.includes("response_format")) {
+        delete payload.response_format;
+        response = await this.postJson(url, headers, payload, resolved, signal);
+      } else {
+        throw new Error(
+          `Remote provider "${resolved.preset.label}" responded with HTTP 400: ${bodyExcerpt(errorBody)}`
+        );
+      }
+    }
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(
+        `Remote provider "${resolved.preset.label}" responded with HTTP ${response.status}: ${bodyExcerpt(body)}`
+      );
+    }
+
+    const rawText = await response.text();
+    let parsed: OpenAiChatCompletion;
+    try {
+      parsed = JSON.parse(rawText) as OpenAiChatCompletion;
+    } catch {
+      throw new Error(`Remote provider "${resolved.preset.label}" returned an unexpected response shape`);
+    }
+    const content = parsed?.choices?.[0]?.message?.content;
+    if (typeof content !== "string") {
+      throw new Error(`Remote provider "${resolved.preset.label}" returned an unexpected response shape`);
+    }
+    return content;
+  }
+
+  private async requestAnthropic(
+    resolved: ResolvedRemoteSettings,
+    request: DialogueRequest,
+    signal: AbortSignal
+  ): Promise<string> {
+    const apiKey = resolved.apiKey;
+    if (apiKey === null) {
+      throw new Error(`Remote provider "${resolved.preset.label}" requires an API key`);
+    }
+    const response = await this.postJson(
+      `${resolved.baseUrl}/messages`,
+      {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      {
+        model: resolved.model,
+        max_tokens: this.config.maxTokens,
+        temperature: this.config.temperature,
+        system: buildSystemPrompt(request),
+        messages: buildConversationMessages(request)
+      },
+      resolved,
+      signal
+    );
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(
+        `Remote provider "${resolved.preset.label}" responded with HTTP ${response.status}: ${bodyExcerpt(body)}`
+      );
+    }
+
+    const rawText = await response.text();
+    let parsed: AnthropicMessagesResponse;
+    try {
+      parsed = JSON.parse(rawText) as AnthropicMessagesResponse;
+    } catch {
+      throw new Error(`Remote provider "${resolved.preset.label}" returned an unexpected response shape`);
+    }
+    const rawContent = parsed?.content;
+    const parts = Array.isArray(rawContent) ? rawContent : [];
+    const textPart = parts.find((part) => part.type === "text");
+    const content = textPart?.text;
+    if (typeof content !== "string") {
+      throw new Error(`Remote provider "${resolved.preset.label}" returned an unexpected response shape`);
+    }
+    return content;
+  }
+
+  private async postJson(
+    url: string,
+    headers: Record<string, string>,
+    payload: Record<string, unknown>,
+    resolved: ResolvedRemoteSettings,
+    signal: AbortSignal
+  ): Promise<Response> {
+    try {
+      return await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal });
+    } catch (error) {
+      if (isAbort(error, signal)) {
+        throw error;
+      }
+      throw new Error(`Remote provider "${resolved.preset.label}" is unreachable at ${resolved.baseUrl}`);
+    }
+  }
+}
