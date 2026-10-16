@@ -134,18 +134,36 @@ export class ConversationCoordinator {
         let firstAudibleMs = -1;
         let doneEvent: TurnStreamDone | null = null;
 
+        // The playback controller's chunk counter spans the whole page
+        // session while `tracks` is rebuilt for every turn; this turn counts
+        // the chunks it actually hears itself, or the mouth would be cleared
+        // for every turn after the first.
+        let playbackChunkIndex = -1;
+        // Playback may drain between chunks while the stream is still open;
+        // the turn is only over once the stream ended AND the queue drained.
+        let streamFinished = false;
+        let playbackDrained = false;
+        let resolveDrained: () => void = () => {};
         const drained = new Promise<void>((resolve) => {
-            this.resolvePlaybackEnd = resolve;
-            audioPlayback.onQueueDrained(() => resolve());
+            resolveDrained = resolve;
         });
-        audioPlayback.onChunkStarted((index) => {
-            const track = tracks[index] ?? null;
+        const notePlaybackDrained = (): void => {
+            playbackDrained = true;
+            if (streamFinished) {
+                resolveDrained();
+            }
+        };
+        this.resolvePlaybackEnd = notePlaybackDrained;
+        audioPlayback.onQueueDrained(notePlaybackDrained);
+        audioPlayback.onChunkStarted(() => {
+            playbackChunkIndex += 1;
+            const track = tracks[playbackChunkIndex] ?? null;
             if (track !== null) {
                 facialAnimation.prepare(track);
             } else {
                 facialAnimation.clear();
             }
-            if (index === 0 && firstAudibleMs < 0) {
+            if (playbackChunkIndex === 0 && firstAudibleMs < 0) {
                 firstAudibleMs = Math.round(performance.now() - t0);
             }
         });
@@ -183,7 +201,6 @@ export class ConversationCoordinator {
             const decoder = new TextDecoder();
             let buffer = "";
             let playbackStarted = false;
-            let streamFinished = false;
             while (!streamFinished) {
                 const { done, value } = await reader.read();
                 if (done) {
@@ -246,6 +263,11 @@ export class ConversationCoordinator {
                         throw new Error(event.message);
                     }
                 }
+            }
+
+            streamFinished = true;
+            if (playbackDrained && !audioPlayback.isPlaying()) {
+                resolveDrained();
             }
 
             if (turnId !== this.currentTurnId || abort.signal.aborted) {

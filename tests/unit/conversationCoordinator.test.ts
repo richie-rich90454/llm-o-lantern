@@ -337,6 +337,94 @@ describe("ConversationCoordinator", () => {
         expect(harness.calls[0].url).toBe(`${API_BASE}/api/conversation/turn-stream`);
     });
 
+    it("keeps the mouth on later turns: tracks are per-turn, playback indexes are global", async () => {
+        const completed: TurnDiagnostics[] = [];
+        const harness = createHarness({
+            responses: [
+                ndjsonResponse([chunkEvent(0, "First turn."), doneEvent({ text: "First turn." })]),
+                ndjsonResponse([
+                    chunkEvent(0, "Second turn."),
+                    doneEvent({ text: "Second turn." }),
+                ]),
+            ],
+            onTurnCompleted: (diagnostics) => completed.push(diagnostics),
+        });
+        harness.character.visitorSpeechStarted();
+
+        const first = harness.coordinator.submitUtterance("one");
+        await flushMicrotasks();
+        harness.fireChunkEnded();
+        await first;
+        const preparedAfterFirst = harness.facialStats.preparedTracks.length;
+
+        // The playback double keeps counting chunks across turns (like the
+        // real controller), so the second turn starts at global index 1.
+        const second = harness.coordinator.submitUtterance("two");
+        await flushMicrotasks();
+
+        expect(harness.playbackStats.chunkStarts).toEqual([0, 1]);
+        expect(harness.facialStats.clearCalls).toBe(0);
+        expect(harness.facialStats.preparedTracks.length).toBeGreaterThan(preparedAfterFirst);
+
+        harness.fireChunkEnded();
+        await second;
+
+        expect(completed).toHaveLength(2);
+        expect(completed[1].text).toBe("Second turn.");
+    });
+
+    it("completes the turn only when the stream ended and playback drained", async () => {
+        const streamControl: {
+            current: ReadableStreamDefaultController<Uint8Array> | null;
+        } = { current: null };
+        const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+                streamControl.current = controller;
+            },
+        });
+        const completed: TurnDiagnostics[] = [];
+        const harness = createHarness({
+            responses: [new Response(stream, { status: 200 })],
+            onTurnCompleted: (diagnostics) => completed.push(diagnostics),
+        });
+        harness.character.visitorSpeechStarted();
+        const encoder = new TextEncoder();
+
+        const submission = harness.coordinator.submitUtterance("first");
+        await flushMicrotasks();
+        streamControl.current?.enqueue(
+            encoder.encode(`${JSON.stringify(chunkEvent(0, "First piece."))}\n`),
+        );
+        await flushMicrotasks();
+
+        // The first chunk finishes while the rest of the stream is still
+        // arriving; the turn must not complete yet.
+        harness.fireChunkEnded();
+        await flushMicrotasks();
+        expect(completed).toHaveLength(0);
+        expect(harness.coordinator.isBusy()).toBe(true);
+
+        streamControl.current?.enqueue(
+            encoder.encode(`${JSON.stringify(chunkEvent(1, "Second piece."))}\n`),
+        );
+        streamControl.current?.enqueue(
+            encoder.encode(
+                `${JSON.stringify(doneEvent({ text: "First piece. Second piece." }))}\n`,
+            ),
+        );
+        streamControl.current?.close();
+        await flushMicrotasks();
+        // The stream is over but the second chunk is still audible, so the
+        // turn must stay in flight until playback drains.
+        expect(completed).toHaveLength(0);
+        expect(harness.coordinator.isBusy()).toBe(true);
+        harness.fireChunkEnded();
+        await submission;
+
+        expect(completed).toHaveLength(1);
+        expect(completed[0].text).toBe("First piece. Second piece.");
+    });
+
     it("discards an interrupted turn's stream and never plays its audio", async () => {
         const streamControl: {
             current: ReadableStreamDefaultController<Uint8Array> | null;
